@@ -1,6 +1,3 @@
-/* Rootism Developer Platform Client Application (Steps 81–90)
-   Strictly uses relative `/api/v1/*` URLs so it runs seamlessly in local & proxied preview hosts. */
-
 (() => {
   "use strict";
 
@@ -21,6 +18,18 @@
   // --- DOM Helpers ---
   const $ = (id) => document.getElementById(id);
 
+  const STORAGE_API_BASE_KEY = "rootism_studio_api_base_v1";
+  const local = window.RootismLocal;
+
+  function apiBase() {
+    return (localStorage.getItem(STORAGE_API_BASE_KEY) || "").trim().replace(/\/+$/, "");
+  }
+
+  function apiUrl(relativePath) {
+    const base = apiBase();
+    return base ? base + relativePath.replace(/^\./, "") : relativePath;
+  }
+
   function authHeaders(extra = {}) {
     const headers = { "Content-Type": "application/json", ...extra };
     const apiKey = $("ctrl-api-key")?.value?.trim();
@@ -31,7 +40,10 @@
   }
 
   async function apiFetch(relativePath, options = {}) {
-    const resp = await fetch(relativePath, {
+    if (local.active) {
+      return local.handle(relativePath, options);
+    }
+    const resp = await fetch(apiUrl(relativePath), {
       ...options,
       headers: authHeaders(options.headers || {}),
     });
@@ -109,7 +121,9 @@
 
   // --- Theme & View Layout ---
   function initThemeAndTabs() {
-    const savedTheme = localStorage.getItem(STORAGE_THEME_KEY) || "dark";
+    const savedTheme =
+      localStorage.getItem(STORAGE_THEME_KEY) ||
+      (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
     setTheme(savedTheme);
 
     $("theme-toggle-btn").addEventListener("click", () => {
@@ -190,7 +204,7 @@
   function setTheme(theme) {
     document.documentElement.setAttribute("data-theme", theme);
     localStorage.setItem(STORAGE_THEME_KEY, theme);
-    $("theme-toggle-btn").textContent = theme === "dark" ? "Light Theme" : "Dark Theme";
+    $("theme-toggle-btn").textContent = theme === "dark" ? "Light theme" : "Dark theme";
   }
 
   // --- Session Persistence ---
@@ -204,7 +218,7 @@
       state.sessions = [];
     }
     if (!Array.isArray(state.sessions) || state.sessions.length === 0) {
-      createNewSession("Session 1 — Engineering Studio");
+      createNewSession("New chat");
     } else {
       state.activeSessionId = state.sessions[0].id;
       renderSessionList();
@@ -223,7 +237,7 @@
   function createNewSession(title) {
     const sess = {
       id: `sess-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      title: title || `Session ${state.sessions.length + 1}`,
+      title: title || "New chat",
       createdAt: new Date().toISOString(),
       messages: [],
     };
@@ -249,7 +263,7 @@
           ev.stopPropagation();
           state.sessions = state.sessions.filter((x) => x.id !== sess.id);
           if (state.sessions.length === 0) {
-            createNewSession("Session 1");
+            createNewSession("New chat");
           } else {
             state.activeSessionId = state.sessions[0].id;
             saveSessions();
@@ -273,10 +287,8 @@
     if (!sess || sess.messages.length === 0) {
       container.innerHTML = `
         <div class="msg-card">
-          <div class="msg-header"><span class="msg-role">Rootism Developer Platform</span></div>
-          <div class="msg-body">Welcome to <strong>Rootism</strong>.
-&bull; Every response streams live from <code>RootismInferenceEngine</code> (zero external APIs or canned strings).
-&bull; Select a reasoning mode above, inspect/edit files in the right-hand IDE, or run the sandboxed Coding Agent with pytest verification.</div>
+          <div class="msg-header"><span class="msg-role">Rootism</span></div>
+          <div class="msg-body">Ask a question, or open a file in the editor and include it as context.</div>
         </div>`;
       return;
     }
@@ -297,7 +309,7 @@
 
       card.innerHTML = `
         <div class="msg-header">
-          <span class="msg-role">${m.role === "user" ? "Developer" : "Rootism"}</span>
+          <span class="msg-role">${m.role === "user" ? "You" : "Rootism"}</span>
           <div class="msg-actions">
             ${metaBadge}
             ${m.role === "user" ? `<button type="button" class="link-btn edit-msg-btn" data-idx="${idx}">Edit</button>` : ""}
@@ -366,7 +378,14 @@
     };
 
     try {
-      const resp = await fetch("./api/v1/chat/completions", {
+      if (local.active) {
+        assistantMsg.content = local.chatNotice();
+        saveSessions();
+        renderMessages();
+        return;
+      }
+
+      const resp = await fetch(apiUrl("./api/v1/chat/completions"), {
         method: "POST",
         headers: authHeaders(),
         body: JSON.stringify(payload),
@@ -644,6 +663,7 @@
   // --- Health & Model Spec Poll ---
   async function loadHealthAndSpec() {
     const pill = $("health-pill");
+    local.active = false;
     try {
       const health = await apiFetch("./api/v1/health");
       pill.className = "status-pill status-online";
@@ -654,10 +674,31 @@
       $("runtime-honesty-banner").textContent = info.honest_training_status.status_banner;
       renderArchitectureSpec(info);
     } catch (err) {
-      pill.className = "status-pill status-offline";
-      pill.innerHTML = `<span class="dot"></span> API Offline`;
-      $("runtime-honesty-banner").textContent = `Disconnected: ${err.message}`;
+      local.active = true;
+      pill.className = "status-pill status-static";
+      pill.innerHTML = `<span class="dot"></span> No backend`;
+      $("runtime-honesty-banner").textContent = apiBase()
+        ? `Can't reach ${apiBase()}. Editor works, chat needs a model.`
+        : "No backend connected. Editor works, chat needs a model.";
+      renderStaticSpec();
     }
+  }
+
+  function renderStaticSpec() {
+    $("architecture-details").innerHTML = `
+      <div class="arch-card">
+        <h3>No backend connected</h3>
+        <p>There is no model loaded, so there are no model stats to show.</p>
+        <p class="muted-small">Set a Backend URL in Settings to point this page at a hosted server.</p>
+      </div>
+      <div class="arch-card">
+        <h3>Works on this page</h3>
+        <p>File explorer, editor, diffs, undo, symbol index, chat history and exports. Files are kept in this browser's local storage.</p>
+      </div>
+      <div class="arch-card">
+        <h3>Needs a backend</h3>
+        <p>Chat, FIM completion, the coding agent and running pytest.</p>
+      </div>`;
   }
 
   function renderArchitectureSpec(info) {
@@ -921,6 +962,15 @@
     initThemeAndTabs();
     loadSessions();
     bindEvents();
+
+    const baseInput = $("ctrl-api-base");
+    baseInput.value = apiBase();
+    baseInput.addEventListener("change", async () => {
+      localStorage.setItem(STORAGE_API_BASE_KEY, baseInput.value.trim());
+      await loadHealthAndSpec();
+      await refreshWorkspaceFiles();
+      await openWorkspaceFile(state.activeFilePath);
+    });
     await loadHealthAndSpec();
     await refreshWorkspaceFiles();
     await openWorkspaceFile("src/metrics.py");
