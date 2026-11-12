@@ -1,0 +1,33 @@
+# Rootism — generated / local artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+build/
+dist/
+.coverage
+htmlcov/
+
+# Model + training artifacts (never commit weights or corpora)
+*.pt
+*.pth
+*.safetensors
+*.bin
+*.npy
+*.npz
+checkpoints/
+runs/
+data/
+datasets/
+corpus/
+artifacts/
+*.log
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

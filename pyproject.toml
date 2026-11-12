@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rootism"
+version = "0.1.0"
+description = "Rootism: independently implemented ~3B-parameter AI coding model and production platform"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "LicenseRef-Proprietary-All-Rights-Reserved"
+license-files = ["LICENSE"]
+dependencies = [
+    "torch>=2.4",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov>=5"]
+tokenizer = ["regex>=2023.12.25"]
+serving = ["fastapi>=0.110", "uvicorn>=0.29", "pydantic>=2.6"]
+flash = ["flash-attn>=2.5"]
+
+[project.scripts]
+rootism-params = "rootism.cli.params:main"
+rootism-tokenizer = "rootism.cli.tokenizer:main"
+rootism-doctor = "rootism.cli.doctor:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "slow: tests that allocate large tensors or run long loops",
+    "integration: multi-component tests",
+]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.rootism]
+schema_version = "1"
