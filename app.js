@@ -526,7 +526,7 @@
       updateEditorGutter();
       refreshWorkspaceFiles();
     } catch (err) {
-      showAlert(`Cannot read ${relPath}: ${err.message}`);
+      showAlert(`cannot read ${relPath}: ${err.message}`);
     }
   }
 
