@@ -3,13 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Rootism — Commercial AI Coding, Reasoning &amp; Agent Platform</title>
+  <title>Rootism</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <a href="#main-workspace" class="skip-link">Skip to main developer workspace</a>
+  <a href="#main-workspace" class="skip-link">Skip to workspace</a>
 
-  <!-- Top System & Runtime Telemetry Bar -->
   <header class="topbar" role="banner">
     <div class="brand-group">
       <button id="sidebar-toggle-btn" class="icon-btn mobile-only" aria-label="Toggle session sidebar" title="Toggle sessions">
@@ -18,55 +17,52 @@
       <div class="brand-mark" aria-hidden="true">R</div>
       <div class="brand-titles">
         <h1 class="brand-name">Rootism <span class="version-pill">v0.1.0</span></h1>
-        <p id="runtime-honesty-banner" class="runtime-subtext">Connecting to Rootism Inference Runtime…</p>
+        <p id="runtime-honesty-banner" class="runtime-subtext">Connecting…</p>
       </div>
     </div>
 
     <nav class="mode-tabs" role="tablist" aria-label="Platform Workspace Views">
       <button class="tab-btn active" role="tab" aria-selected="true" data-view="split" id="tab-split">
-        Studio Split
+        Split view
       </button>
       <button class="tab-btn" role="tab" aria-selected="false" data-view="chat" id="tab-chat">
-        Reasoning Chat
+        Chat
       </button>
       <button class="tab-btn" role="tab" aria-selected="false" data-view="workspace" id="tab-workspace">
-        Code &amp; Diff IDE
+        Editor
       </button>
       <button class="tab-btn" role="tab" aria-selected="false" data-view="agent" id="tab-agent">
-        Coding Agent
+        Agent
       </button>
       <button class="tab-btn" role="tab" aria-selected="false" data-view="architecture" id="tab-architecture">
-        3B Spec &amp; Telemetry
+        Model
       </button>
     </nav>
 
     <div class="topbar-actions">
       <span id="health-pill" class="status-pill status-connecting" role="status" aria-live="polite">
-        <span class="dot"></span> Checking API…
+        <span class="dot"></span> Connecting…
       </span>
       <button id="theme-toggle-btn" class="ghost-btn" aria-label="Switch color theme" title="Toggle Dark / Light Theme">
-        Light Theme
+        Light theme
       </button>
       <button id="settings-toggle-btn" class="ghost-btn" aria-expanded="false" aria-controls="settings-drawer">
-        Sampling &amp; Context
+        Settings
       </button>
     </div>
   </header>
 
-  <!-- Global Error / Network Banner -->
   <div id="global-alert" class="global-alert hidden" role="alert">
     <span id="global-alert-text"></span>
     <button id="global-alert-dismiss" class="ghost-btn small-btn">Dismiss</button>
   </div>
 
-  <!-- Main Multi-Column Developer Studio -->
   <div class="studio-shell" id="main-workspace">
-    <!-- Left Sidebar: Conversations & Export -->
     <aside class="sidebar" id="session-sidebar" aria-label="Conversation Sessions">
       <div class="sidebar-header">
-        <button id="new-session-btn" class="primary-btn full-width">+ New Engineering Session</button>
+        <button id="new-session-btn" class="primary-btn full-width">New chat</button>
       </div>
-      <div class="sidebar-section-label">Active Sessions</div>
+      <div class="sidebar-section-label">Chats</div>
       <ul id="session-list" class="session-list" role="list"></ul>
 
       <div class="sidebar-footer">
@@ -84,27 +80,26 @@
           </div>
         </div>
         <div class="export-row">
-          <button id="export-md-btn" class="ghost-btn small-btn" title="Export current chat as Markdown">Export .MD</button>
-          <button id="export-json-btn" class="ghost-btn small-btn" title="Export current chat as JSON">Export .JSON</button>
+          <button id="export-md-btn" class="ghost-btn small-btn" title="Export current chat as Markdown">Export .md</button>
+          <button id="export-json-btn" class="ghost-btn small-btn" title="Export current chat as JSON">Export .json</button>
         </div>
       </div>
     </aside>
 
-    <!-- Primary Center Column: Conversational Chat & Structured Reasoning -->
     <main class="panel chat-panel" id="panel-chat" aria-label="Rootism Chat and Reasoning">
       <div class="panel-toolbar">
         <div class="toolbar-left">
-          <label for="reasoning-mode-select" class="toolbar-label">Reasoning Mode:</label>
+          <label for="reasoning-mode-select" class="toolbar-label">Mode</label>
           <select id="reasoning-mode-select" class="select-control" aria-label="Select reasoning presentation mode">
-            <option value="structured" selected>Structured Solution</option>
-            <option value="concise">Concise Answer</option>
-            <option value="explain">Explanation + Solution</option>
-            <option value="approach_summary">Summary of Approach</option>
-            <option value="assumptions_and_intermediates">Assumptions &amp; Intermediates</option>
+            <option value="structured" selected>Structured</option>
+            <option value="concise">Concise</option>
+            <option value="explain">Explain, then solve</option>
+            <option value="approach_summary">Approach summary</option>
+            <option value="assumptions_and_intermediates">Assumptions and steps</option>
           </select>
           <label class="checkbox-inline" title="Include currently open workspace editor file in prompt context">
             <input type="checkbox" id="attach-workspace-toggle" checked />
-            <span>Attach Active File Context</span>
+            <span>Include open file</span>
           </label>
         </div>
         <div class="toolbar-right">
@@ -120,34 +115,32 @@
         <textarea
           id="chat-input"
           rows="3"
-          placeholder="Ask Rootism to design, debug, refactor, or verify code… (Ctrl/Cmd + Enter to send, Esc to stop)"
+          placeholder="Ask something. Ctrl/Cmd+Enter to send."
           required
         ></textarea>
         <div class="composer-footer">
           <span id="composer-hint" class="muted-small">
-            Real scratch <code>RootismForCausalLM</code> KV-cached SSE stream &bull; Special tokens isolated
+            Ctrl/Cmd+Enter to send, Esc to stop
           </span>
           <div class="composer-buttons">
-            <button type="button" id="stop-stream-btn" class="danger-btn hidden">Stop Generation</button>
-            <button type="submit" id="send-btn" class="primary-btn">Send Prompt</button>
+            <button type="button" id="stop-stream-btn" class="danger-btn hidden">Stop</button>
+            <button type="submit" id="send-btn" class="primary-btn">Send</button>
           </div>
         </div>
       </form>
     </main>
 
-    <!-- Secondary Right Column: Integrated Code Workspace + Multi-Step Agent + Spec View -->
     <section class="panel right-workbench" id="panel-workbench" aria-label="Integrated Workspace and Agent">
-      <!-- Sub-panel A: Integrated File Explorer, Multi-tab Code Editor & Diff Viewer -->
       <div class="workbench-card" id="subpanel-workspace">
         <div class="panel-toolbar">
           <div class="toolbar-left">
-            <strong>Workspace Explorer &amp; Editor</strong>
+            <strong>Workspace</strong>
             <span id="active-file-badge" class="code-badge">src/metrics.py</span>
           </div>
           <div class="toolbar-right">
             <button id="new-file-btn" class="ghost-btn small-btn">+ File</button>
-            <button id="fim-complete-btn" class="ghost-btn small-btn" title="Run Fill-In-The-Middle completion at cursor">FIM Complete</button>
-            <button id="revert-edit-btn" class="ghost-btn small-btn" title="Rollback latest workspace edit">Undo Patch</button>
+            <button id="fim-complete-btn" class="ghost-btn small-btn" title="Run Fill-In-The-Middle completion at cursor">Complete</button>
+            <button id="revert-edit-btn" class="ghost-btn small-btn" title="Rollback latest workspace edit">Undo</button>
             <button id="save-file-btn" class="primary-btn small-btn" title="Save file &amp; compute unified diff (Ctrl/Cmd+S)">Save</button>
           </div>
         </div>
@@ -159,7 +152,7 @@
               <button id="refresh-files-btn" class="link-btn" title="Refresh workspace index">Refresh</button>
             </div>
             <ul id="workspace-file-list" class="file-list"></ul>
-            <div class="pane-header symbols-header">Indexed Symbols</div>
+            <div class="pane-header symbols-header">Symbols</div>
             <ul id="workspace-symbol-list" class="symbol-list"></ul>
           </div>
 
@@ -184,16 +177,14 @@
         </div>
       </div>
 
-      <!-- Sub-panel B: Multi-Step Software Engineering Agent & Safety Confirmation Gate -->
       <div class="workbench-card" id="subpanel-agent">
         <div class="panel-toolbar">
           <div class="toolbar-left">
-            <strong>Multi-Step Coding Agent</strong>
-            <span class="muted-small">Inspect &rarr; Edit &rarr; Sandbox Exec &rarr; Pytest &rarr; Diagnose</span>
+            <strong>Agent</strong>
           </div>
           <div class="toolbar-right">
-            <button id="quick-inspect-btn" class="ghost-btn small-btn">Inspect Repo</button>
-            <button id="quick-pytest-btn" class="ghost-btn small-btn">Run Pytest</button>
+            <button id="quick-inspect-btn" class="ghost-btn small-btn">Inspect</button>
+            <button id="quick-pytest-btn" class="ghost-btn small-btn">Run tests</button>
           </div>
         </div>
 
@@ -203,90 +194,91 @@
             type="text"
             id="agent-goal-input"
             class="text-input"
-            placeholder="e.g., Inspect project and run tests, or 'delete file src/ui_helpers.ts' to test safety gate…"
+            placeholder="What should the agent do?"
             value="Inspect project symbols, verify compute_p95_latency, and run pytest suite"
           />
-          <label for="agent-max-iter" class="toolbar-label">Max Steps:</label>
+          <label for="agent-max-iter" class="toolbar-label">Max steps</label>
           <input type="number" id="agent-max-iter" class="num-input" value="6" min="1" max="16" />
-          <button type="submit" id="run-agent-btn" class="primary-btn small-btn">Run Agent</button>
+          <button type="submit" id="run-agent-btn" class="primary-btn small-btn">Run</button>
         </form>
 
-        <!-- Human-in-the-loop Safety Confirmation Gate (Steps 76 & 86) -->
         <div id="agent-confirm-banner" class="confirm-banner hidden" role="region" aria-label="Destructive Action Confirmation">
           <div class="confirm-content">
-            <strong>Safety Policy Confirmation Required</strong>
+            <strong>Confirm this action</strong>
             <p id="agent-confirm-reason"></p>
             <code id="agent-confirm-token-label"></code>
           </div>
           <div class="confirm-actions">
-            <button type="button" id="agent-approve-btn" class="danger-btn small-btn">Approve &amp; Execute</button>
-            <button type="button" id="agent-reject-btn" class="ghost-btn small-btn">Reject Safely</button>
+            <button type="button" id="agent-approve-btn" class="danger-btn small-btn">Approve</button>
+            <button type="button" id="agent-reject-btn" class="ghost-btn small-btn">Reject</button>
           </div>
         </div>
 
         <div id="agent-trace-log" class="agent-trace-log" aria-live="polite">
-          <div class="empty-hint">Ready. Run an agent goal or click <strong>Run Pytest</strong> to inspect live tool execution traces.</div>
+          <div class="empty-hint">Nothing has run yet.</div>
         </div>
       </div>
 
-      <!-- Sub-panel C: Production Rootism-3B Spec & Telemetry View -->
       <div class="workbench-card hidden" id="subpanel-architecture">
         <div class="panel-toolbar">
-          <strong>Rootism-3B Verified Architecture &amp; Active Checkpoint Telemetry</strong>
+          <strong>Model</strong>
         </div>
         <div id="architecture-details" class="arch-grid"></div>
       </div>
     </section>
   </div>
 
-  <!-- Slide-over Model Sampling & System Prompt Drawer (Step 87) -->
   <aside id="settings-drawer" class="settings-drawer hidden" role="dialog" aria-modal="false" aria-label="Model Generation Settings">
     <div class="drawer-header">
-      <h2>Inference &amp; Sampling Controls</h2>
+      <h2>Settings</h2>
       <button id="close-settings-btn" class="ghost-btn small-btn" aria-label="Close settings">Close</button>
     </div>
     <div class="drawer-body">
-      <p class="muted-small">
-        Every control maps directly to real tensor sampling parameters in <code>RootismInferenceEngine</code>.
-      </p>
 
       <label class="setting-field">
-        <span>Max New Tokens: <strong id="val-max-tokens">96</strong></span>
+        <span>Max tokens <strong id="val-max-tokens">96</strong></span>
         <input type="range" id="ctrl-max-tokens" min="16" max="1024" step="16" value="96" />
       </label>
 
       <label class="setting-field">
-        <span>Temperature (0 = Greedy Deterministic): <strong id="val-temperature">0.25</strong></span>
+        <span>Temperature <strong id="val-temperature">0.25</strong></span>
         <input type="range" id="ctrl-temperature" min="0" max="1.5" step="0.05" value="0.25" />
       </label>
 
       <label class="setting-field">
-        <span>Top-P Nucleus Sampling: <strong id="val-top-p">0.90</strong></span>
+        <span>Top-p <strong id="val-top-p">0.90</strong></span>
         <input type="range" id="ctrl-top-p" min="0.1" max="1.0" step="0.05" value="0.90" />
       </label>
 
       <label class="setting-field">
-        <span>Top-K Filtering: <strong id="val-top-k">40</strong></span>
+        <span>Top-k <strong id="val-top-k">40</strong></span>
         <input type="range" id="ctrl-top-k" min="0" max="200" step="5" value="40" />
       </label>
 
       <label class="setting-field">
-        <span>Repetition Penalty: <strong id="val-rep-pen">1.08</strong></span>
+        <span>Repetition penalty <strong id="val-rep-pen">1.08</strong></span>
         <input type="range" id="ctrl-rep-pen" min="1.0" max="1.5" step="0.02" value="1.08" />
       </label>
 
       <label class="setting-field">
-        <span>System Instructions</span>
+        <span>System prompt</span>
         <textarea id="ctrl-system-prompt" rows="4">You are Rootism, an independently engineered commercial software engineering and multi-step reasoning model.</textarea>
       </label>
 
       <label class="setting-field">
-        <span>Optional Bearer API Key (if server started with <code>ROOTISM_API_KEY</code>)</span>
-        <input type="password" id="ctrl-api-key" class="text-input" placeholder="Leave blank if open local runtime" />
+        <span>Backend URL</span>
+        <input type="url" id="ctrl-api-base" class="text-input" placeholder="https://your-server.example.com" />
+        <span class="muted-small">Leave empty to use the editor without a model. Must be https when this page is on GitHub Pages.</span>
+      </label>
+
+      <label class="setting-field">
+        <span>API key</span>
+        <input type="password" id="ctrl-api-key" class="text-input" placeholder="Leave blank if not required" />
       </label>
     </div>
   </aside>
 
+  <script src="./local-api.js" defer></script>
   <script src="./app.js" defer></script>
 </body>
 </html>
