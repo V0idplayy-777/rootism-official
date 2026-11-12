@@ -1,0 +1,36 @@
+# Explicitly non-production small-scale verification config for CPU CI / integration testing.
+# NEVER used as a substitute for Rootism-3B training.
+architecture_id: rootism-decoder-v1
+model_name: Rootism-Tiny-VerifyOnly
+verification_mode: true
+vocab_size: 1024
+d_model: 128
+n_layers: 4
+n_heads: 4
+n_kv_heads: 2
+head_dim: 32
+intermediate_size: 384
+rms_norm_eps: 1.0e-06
+qk_norm: true
+attention_bias: false
+mlp_bias: false
+tie_word_embeddings: false
+attention_dropout: 0.0
+max_position_embeddings: 2048
+extended_context_length: 4096
+rope_theta: 500000.0
+rope_scaling:
+  scaling_type: none
+  factor: 1.0
+  original_max_position_embeddings: 2048
+  low_freq_factor: 1.0
+  high_freq_factor: 4.0
+  attention_factor: null
+init_std: 0.02
+residual_depth_scaling: true
+pad_token_id: 0
+bos_token_id: 1
+eos_token_id: 2
+unk_token_id: 3
+initialization_origin: random_scratch
+tokenizer_version_fingerprint: null

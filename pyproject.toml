@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rootism"
+version = "0.1.0"
+description = "Rootism: Independently Engineered 3B-Parameter AI Coding & Reasoning System"
+readme = "README.md"
+requires-python = ">=3.11"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Dubnium (V0idplayy-777)" }
+]
+# Only commercially permissive third-party runtime dependencies (BSD / MIT / Apache-2.0):
+dependencies = [
+    "torch>=2.4.0",          # BSD-3-Clause
+    "numpy>=1.26.0",         # BSD-3-Clause
+    "pydantic>=2.7.0",       # MIT
+    "pyyaml>=6.0.1",         # MIT
+    "safetensors>=0.4.3",    # Apache-2.0
+    "psutil>=5.9.8",         # BSD-3-Clause
+    "fastapi>=0.111.0",      # MIT
+    "uvicorn>=0.30.0",       # BSD-3-Clause
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",         # MIT
+    "httpx>=0.27.0",         # BSD-3-Clause (FastAPI TestClient)
+]
+
+[project.scripts]
+rootism = "rootism.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["rootism*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"

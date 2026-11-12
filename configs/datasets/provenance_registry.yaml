@@ -1,0 +1,114 @@
+datasets:
+  - dataset_id: stack_v2_permissive_spdx_filtered
+    dataset_name: "Software Heritage / Permissive Source Code Subset (Strict SPDX File-Verified)"
+    original_publisher: "Software Heritage & BigCode Open Governance Archive"
+    original_source: "https://archive.softwareheritage.org"
+    download_location: "s3://softwareheritage/content/ (filtered via Rootism DeepFileLicenseVerifier)"
+    exact_version: "swh-2024-03-permissive-spdx-v1"
+    licence: "MIT OR Apache-2.0 OR BSD-3-Clause OR BSD-2-Clause OR ISC"
+    licence_url: "https://opensource.org/licenses"
+    commercial_use_permission: true
+    attribution_requirements: "Retain repository copyright headers and Apache-2.0 NOTICE texts in THIRD_PARTY_DATA_NOTICES.md."
+    redistribution_restrictions: "Permissive commercial redistribution allowed; copyleft, unlicensed, and vendored trees strictly quarantined."
+    collection_date: "2026-11-12"
+    processing_history:
+      - "Filtered to repositories declaring explicit MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, or ISC licenses."
+      - "Scanned every individual file via Rootism DeepFileLicenseVerifier to quarantine nested GPL/AGPL/LGPL/CC-BY-NC headers and vendor/submodules."
+      - "Passed Rootism DataQualityPipeline, 5-level DeduplicationEngine, and DecontaminationEngine."
+    known_limitations:
+      - "Repository-level metadata in public forges can occasionally mislabel vendored files; mitigated via mandatory per-file header & path scanning."
+    modality: "source_code_curated"
+
+  - dataset_id: official_permissive_ecosystem_docs
+    dataset_name: "Permissive Programming Language & Framework Documentation Corpus"
+    original_publisher: "Python Software Foundation, Rust Project, Go Authors, FastAPI, React & PostgreSQL Global Development Group"
+    original_source: "https://github.com/python/cpython/tree/main/Doc"
+    download_location: "https://github.com (tagged release tarballs of official documentation trees)"
+    exact_version: "2026.11-release-bundle"
+    licence: "Python-2.0 OR MIT OR Apache-2.0 OR BSD-3-Clause OR CC-BY-4.0"
+    licence_url: "https://docs.python.org/3/license.html"
+    commercial_use_permission: true
+    attribution_requirements: "Include PSF, Rust, Go, React (Meta), FastAPI, and CC-BY-4.0 source attributions in documentation and product notices."
+    redistribution_restrictions: "Permitted for commercial model training; trademark logos excluded from dataset ingestion."
+    collection_date: "2026-11-12"
+    processing_history:
+      - "Extracted Markdown, reStructuredText, and doctest examples from tagged official release archives."
+      - "Stripped trademark/logo binary assets and verified per-file SPDX compatibility."
+    known_limitations:
+      - "Focuses on canonical latest stable framework versions; legacy deprecated framework versions have lower representation."
+    modality: "technical_docs_tutorials_and_api_refs"
+
+  - dataset_id: permissive_repo_commits_and_tests
+    dataset_name: "Permissive Multi-File Repository Workflows, Diffs & Test Suites"
+    original_publisher: "Permissively Licensed Open-Source Maintainers (MIT / Apache-2.0 / BSD)"
+    original_source: "https://github.com"
+    download_location: "Curated git commit & test-suite extraction pipeline over MIT/Apache-2.0/BSD repositories"
+    exact_version: "repo-workflows-v1.0"
+    licence: "MIT OR Apache-2.0 OR BSD-3-Clause"
+    licence_url: "https://www.apache.org/licenses/LICENSE-2.0"
+    commercial_use_permission: true
+    attribution_requirements: "Maintain repository-level attribution manifest in THIRD_PARTY_DATA_NOTICES.md."
+    redistribution_restrictions: "Commercial use permitted; excludes issue/PR prose from platforms with restrictive ToS scraping clauses."
+    collection_date: "2026-11-12"
+    processing_history:
+      - "Constructed <repo_start>...<file_sep>...<diff_start> sequences strictly from git commit trees inside MIT/Apache-2.0/BSD repositories."
+      - "Excluded SWE-bench and evaluation benchmark repositories via DecontaminationEngine."
+    known_limitations:
+      - "Commit messages vary in detail; filtered to commits accompanied by passing/modified unit tests."
+    modality: "repository_and_debugging_workflows"
+
+  - dataset_id: permissive_math_and_formal_reasoning
+    dataset_name: "Permissive Mathematical, Algorithmic & Formal Deduction Corpus"
+    original_publisher: "Open Mathematical & Proof Communities (Lean mathlib4 Apache-2.0, SymPy BSD-3, CC-BY-4.0 STEM Open Textbooks)"
+    original_source: "https://github.com/leanprover-community/mathlib4"
+    download_location: "https://github.com/leanprover-community/mathlib4 & verified CC-BY-4.0 / Apache-2.0 STEM archives"
+    exact_version: "math-reasoning-v1.0"
+    licence: "Apache-2.0 OR BSD-3-Clause OR MIT OR CC-BY-4.0"
+    licence_url: "https://creativecommons.org/licenses/by/4.0/"
+    commercial_use_permission: true
+    attribution_requirements: "Provide CC-BY-4.0 author/title/URI credits and Apache-2.0 notices in THIRD_PARTY_DATA_NOTICES.md."
+    redistribution_restrictions: "Commercial training permitted; excludes GSM8K/MATH test splits and all CC-BY-NC/CC-BY-SA sources."
+    collection_date: "2026-11-12"
+    processing_history:
+      - "Verified SPDX license per archive; removed any CC-BY-SA (Wikipedia/StackExchange) or non-commercial academic sets."
+      - "Decontaminated against held-out math and coding evaluation benchmarks."
+    known_limitations:
+      - "Excludes StackExchange (CC-BY-SA copyleft); compensated via permissive textbooks, formal proof libraries, and verified synthetic reasoning."
+    modality: "algorithmic_and_mathematical_reasoning"
+
+  - dataset_id: permissive_clean_prose_foundation
+    dataset_name: "Public-Domain & CC-BY-4.0 Technical/General Natural-Language Foundation"
+    original_publisher: "Public Domain Technical Archives, Government Open Data (CC0-1.0), and CC-BY-4.0 Open Access Publications"
+    original_source: "https://creativecommons.org/publicdomain/zero/1.0/"
+    download_location: "Verified CC0-1.0 and CC-BY-4.0 open-access technical & general prose collections"
+    exact_version: "prose-foundation-v1.0"
+    licence: "CC0-1.0 OR CC-BY-4.0"
+    licence_url: "https://creativecommons.org/publicdomain/zero/1.0/"
+    commercial_use_permission: true
+    attribution_requirements: "Maintain source title, author, and license URL ledger for CC-BY-4.0 articles."
+    redistribution_restrictions: "Unrestricted commercial training permitted with CC-BY-4.0 attribution."
+    collection_date: "2026-11-12"
+    processing_history:
+      - "Filtered for UTF-8 cleanliness, Shannon entropy, duplicate removal, and prompt-injection sanitization."
+    known_limitations:
+      - "Smaller raw volume than uncurated web crawls (CommonCrawl raw has unverified per-page copyright); high signal-to-noise ratio."
+    modality: "general_natural_language_foundation"
+
+  - dataset_id: rootism_verified_original_synthetic
+    dataset_name: "Rootism Execution-Verified Original Synthetic Coding, Debugging & Reasoning Suite"
+    original_publisher: "Dubnium (V0idplayy-777) / Rootism Synthetic Engine"
+    original_source: "rootism/data/synthetic.py"
+    download_location: "Generated locally via `rootism generate-synthetic`"
+    exact_version: "synthetic-v1.0.0"
+    licence: "Rootism-Proprietary-Original"
+    licence_url: "file://LICENSE"
+    commercial_use_permission: true
+    attribution_requirements: "First-party owned by project copyright holder; no external attribution required."
+    redistribution_restrictions: "First-party proprietary commercial asset."
+    collection_date: "2026-11-12"
+    processing_history:
+      - "Programmatically synthesized without any external pretrained teacher model (strictly zero distillation)."
+      - "Every executable coding, debugging, and constraint problem verified in an isolated Python subprocess before admission."
+    known_limitations:
+      - "Synthetic distributions must remain capped (<10% of total mixture) so model generalizes beyond template families."
+    modality: "algorithmic_and_mathematical_reasoning"
