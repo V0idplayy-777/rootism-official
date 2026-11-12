@@ -56,5 +56,6 @@ rootism serve --host 0.0.0.0 --port 8000
 - [`docs/HARDWARE_AND_SCALING_ESTIMATES.md`](docs/HARDWARE_AND_SCALING_ESTIMATES.md) — Explicit Formula-Based Memory, Storage & 650B Cluster Duration Matrix
 - [`docs/LICENSING_AND_PROVENANCE.md`](docs/LICENSING_AND_PROVENANCE.md) & [`THIRD_PARTY_DATA_NOTICES.md`](THIRD_PARTY_DATA_NOTICES.md) — Commercial SPDX Governance & Dataset Attribution Ledger
 - [`docs/OPERATOR_AND_DEPLOYMENT_GUIDE.md`](docs/OPERATOR_AND_DEPLOYMENT_GUIDE.md) — Operator Runbook (Tokenizer, Sharding, `torchrun` FSDP2, Recovery, Quantisation, Serving)
+- [`docs/TRAINING_AND_WEIGHTS.md`](docs/TRAINING_AND_WEIGHTS.md) — Step-by-step: train a model, then serve those exact weights in the studio (standby → live switch)
 - [`docs/FINAL_PRODUCTION_ACCEPTANCE_AUDIT.md`](docs/FINAL_PRODUCTION_ACCEPTANCE_AUDIT.md) — Step 100 Acceptance Audit & Honest Training Status Disclosure
 - [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md) — Complete 100-Step Engineering Tracker

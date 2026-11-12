@@ -205,7 +205,11 @@ class AgentToolRegistry:
 
         existed = target.is_file()
         token = params.get("confirmation_token")
-        if existed:
+        # `overwrite=True` is only set by an explicit human editor save (the user is
+        # consciously saving the file they are looking at), so it does not need a
+        # second confirmation round-trip. Agent-driven writes still hit the gate.
+        explicit_user_save = bool(params.get("overwrite"))
+        if existed and not explicit_user_save:
             decision = self.safety.evaluate_file_mutation(
                 operation="create",
                 paths=[rel_arg],
@@ -329,13 +333,14 @@ class AgentToolRegistry:
 
     def _tool_revert_last_edit(self, _params: dict[str, Any]) -> AgentToolResult:
         if not self.rollback_stack:
+            # Undo with nothing to undo is a successful no-op, never an error.
             return AgentToolResult(
                 tool_name="revert_last_edit",
-                ok=False,
+                ok=True,
                 requires_confirmation=False,
                 confirmation_token=None,
-                summary="Rollback stack is empty; no file mutations to revert.",
-                payload={},
+                summary="Nothing to undo yet.",
+                payload={"reverted_path": None, "reverted": False},
             )
         entry = self.rollback_stack.pop()
         target = self.safety.resolve_confined_path(entry.relative_path)
@@ -353,7 +358,7 @@ class AgentToolRegistry:
             requires_confirmation=False,
             confirmation_token=None,
             summary=action,
-            payload={"reverted_path": entry.relative_path},
+            payload={"reverted_path": entry.relative_path, "reverted": True},
         )
 
     def _tool_run_command(self, params: dict[str, Any]) -> AgentToolResult:

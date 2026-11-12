@@ -86,9 +86,9 @@ def test_fastapi_server_sse_auth_workspace_and_root_html_platform(tmp_path: Path
     ckpt_dir, tok_file = bootstrap_local_serving_artifacts(tmp_path / "srv_rt")
     ws_dir = tmp_path / "srv_ws"
 
+    engine = RootismInferenceEngine(checkpoint_dir=ckpt_dir, tokenizer_dir=tok_file)
     app = create_rootism_app(
-        checkpoint_dir=ckpt_dir,
-        tokenizer_dir=tok_file,
+        engine=engine,
         agent_workspace_dir=ws_dir,
         api_key="test-secret-key",
     )
@@ -98,7 +98,13 @@ def test_fastapi_server_sse_auth_workspace_and_root_html_platform(tmp_path: Path
     # 1. Health & Auth checks
     h_resp = client.get("/api/v1/health")
     assert h_resp.status_code == 200
-    assert h_resp.json()["ready"] is True
+    h_json = h_resp.json()
+    assert h_json["ready"] is True
+    # A fresh runtime is honestly reported as loaded-but-untrained (standby mode).
+    assert h_json["weights_loaded"] is True
+    assert h_json["trained_weights"] is False
+    assert h_json["in_standby_mode"] is True
+    assert h_json["processed_training_tokens"] == 0
 
     unauth = client.get("/api/v1/model/info")
     assert unauth.status_code == 401
@@ -108,8 +114,10 @@ def test_fastapi_server_sse_auth_workspace_and_root_html_platform(tmp_path: Path
     info_json = info_resp.json()
     assert info_json["production_architecture_spec"]["verified_parameter_count"] == 3_009_630_720
     assert info_json["honest_training_status"]["is_fully_pretrained_600b_plus"] is False
+    assert info_json["trained_weights"] is False
+    assert "Standby" in info_json["honest_training_status"]["status_banner"]
 
-    # 2. Synchronous & SSE Streaming Chat Completions
+    # 2. Untrained/standby chat is clean and helpful — never an error, never gibberish
     sync_chat = client.post(
         "/api/v1/chat/completions",
         headers=headers,
@@ -122,7 +130,11 @@ def test_fastapi_server_sse_auth_workspace_and_root_html_platform(tmp_path: Path
         },
     )
     assert sync_chat.status_code == 200
-    assert sync_chat.json()["usage"]["completion_tokens"] >= 1
+    standby_json = sync_chat.json()
+    assert standby_json["standby"] is True
+    assert standby_json["finish_reason"] == "standby_no_trained_weights"
+    assert "Standby mode" in standby_json["message"]["content"]
+    assert "checkpoint-dir" in standby_json["message"]["content"]
 
     with client.stream(
         "POST",
@@ -143,19 +155,131 @@ def test_fastapi_server_sse_auth_workspace_and_root_html_platform(tmp_path: Path
         ]
     event_types = [e["event"] for e in events]
     assert "meta" in event_types and "done" in event_types
+    assert events[-1]["standby"] is True
+    assert events[-1]["finish_reason"] == "standby_no_trained_weights"
 
-    # 3. FIM Code Completion, Workspace Save/Revert & Agent Confirmation Gate
+    # 3. Seamless switch to real neural generation once trained weights are present.
+    #    Serving a checkpoint whose manifest reports processed_training_tokens > 0 flips the
+    #    exact same running process into real `RootismForCausalLM` tensor decoding.
+    engine.manifest["processed_training_tokens"] = 12_000
+    engine.manifest["training_stage_tag"] = "test-trained-checkpoint"
+    trained_health = client.get("/api/v1/health").json()
+    assert trained_health["trained_weights"] is True
+    assert trained_health["in_standby_mode"] is False
+
+    trained_chat = client.post(
+        "/api/v1/chat/completions",
+        headers=headers,
+        json={
+            "messages": [{"role": "user", "content": "Write a tiny helper"}],
+            "stream": False,
+            "max_tokens": 6,
+            "temperature": 0.0,
+        },
+    ).json()
+    assert "standby" not in trained_chat
+    assert trained_chat["usage"]["completion_tokens"] >= 1
+    assert trained_chat["checkpoint_step"] == 0
+
+    trained_fim = client.post(
+        "/api/v1/code/complete",
+        headers=headers,
+        json={"prefix": "def f(x):\n    ", "suffix": "\n    return y", "max_tokens": 4},
+    ).json()
+    assert "standby" not in trained_fim
+
+    with client.stream(
+        "POST",
+        "/api/v1/chat/completions",
+        headers=headers,
+        json={"messages": [{"role": "user", "content": "Stream trained"}], "stream": True, "max_tokens": 4},
+    ) as trained_stream:
+        trained_events = [
+            json.loads(line[5:].strip())
+            for line in trained_stream.iter_lines()
+            if line.startswith("data:")
+        ]
+    assert "standby" not in trained_events[-1]
+    assert trained_events[-1]["event"] == "done"
+
+    # Return to the honest untrained standby state for the remaining assertions.
+    engine.manifest["processed_training_tokens"] = 0
+    engine.manifest["training_stage_tag"] = "initialized-local-verification-checkpoint"
+
+    # 4. Workspace starts COMPLETELY EMPTY (no default/scaffold files)
+    ws_files = client.get("/api/v1/workspace/files", headers=headers).json()
+    assert ws_files["files"] == []
+    assert ws_files["rollback_depth"] == 0
+
+    # Save a brand-new file, then overwrite it: both must succeed without a 400.
+    created = client.post(
+        "/api/v1/workspace/file",
+        headers=headers,
+        json={"path": "src/metrics.py", "content": "def p95(xs):\n    return 1.0\n"},
+    )
+    assert created.status_code == 200
+    assert created.json()["ok"] is True
+
+    overwritten = client.post(
+        "/api/v1/workspace/file",
+        headers=headers,
+        json={"path": "src/metrics.py", "content": "def p95(xs):\n    return 2.0\n"},
+    )
+    assert overwritten.status_code == 200
+    assert overwritten.json()["ok"] is True
+    assert (ws_dir / "src" / "metrics.py").read_text(encoding="utf-8").endswith("return 2.0\n")
+
+    read_back = client.get("/api/v1/workspace/file", headers=headers, params={"path": "src/metrics.py"})
+    assert read_back.status_code == 200
+    assert "return 2.0" in read_back.json()["content"]
+
+    # Reading a file that does not exist is a normal empty-slate state, not an HTTP error.
+    missing = client.get(
+        "/api/v1/workspace/file", headers=headers, params={"path": "does/not/exist.py"}
+    )
+    assert missing.status_code == 200
+    assert missing.json()["exists"] is False
+    assert missing.json()["content"] == ""
+
+    ws_files = client.get("/api/v1/workspace/files", headers=headers).json()
+    assert "src/metrics.py" in ws_files["files"]
+    assert ws_files["rollback_depth"] == 2
+
+    # Undo restores the previous content; a second undo on an empty stack is a clean no-op.
+    reverted = client.post("/api/v1/workspace/revert", headers=headers)
+    assert reverted.status_code == 200
+    assert reverted.json()["reverted"] is True
+    assert reverted.json()["reverted_path"] == "src/metrics.py"
+    assert "return 1.0" in (ws_dir / "src" / "metrics.py").read_text(encoding="utf-8")
+
+    # Second undo rolls back the file creation itself, leaving the project empty again.
+    revert_create = client.post("/api/v1/workspace/revert", headers=headers)
+    assert revert_create.status_code == 200
+    assert revert_create.json()["reverted"] is True
+    assert not (ws_dir / "src" / "metrics.py").exists()
+
+    # Undo with an empty history is a clean 200 no-op, never a 400.
+    revert_empty = client.post("/api/v1/workspace/revert", headers=headers)
+    assert revert_empty.status_code == 200
+    assert revert_empty.json()["reverted"] is False
+    assert revert_empty.json()["message"] == "Nothing to undo yet."
+
+    # 5. FIM Code Completion is a clean standby no-op without trained weights
     fim_resp = client.post(
         "/api/v1/code/complete",
         headers=headers,
         json={"prefix": "def f(x):\n    ", "suffix": "\n    return y", "max_tokens": 6},
     )
     assert fim_resp.status_code == 200
+    assert fim_resp.json()["standby"] is True
+    assert fim_resp.json()["completion"] == ""
 
-    ws_files = client.get("/api/v1/workspace/files", headers=headers).json()
-    assert "src/metrics.py" in ws_files["files"]
-
-    # Trigger safety confirmation gate via `/api/v1/agent/run`
+    # 6. Safety confirmation gate still protects destructive agent actions
+    client.post(
+        "/api/v1/workspace/file",
+        headers=headers,
+        json={"path": "src/ui_helpers.ts", "content": "export const x = 1;\n"},
+    )
     gate_run = client.post(
         "/api/v1/agent/run",
         headers=headers,
@@ -173,21 +297,60 @@ def test_fastapi_server_sse_auth_workspace_and_root_html_platform(tmp_path: Path
     assert reject_res["approved"] is False
     assert (ws_dir / "src" / "ui_helpers.ts").is_file()
 
-    # 4. Verify Root Directory HTML Platform files & strictly relative URLs (Phase X Steps 81–90)
+    # 7. Agent runs cleanly against a completely empty project
+    empty_app = create_rootism_app(
+        checkpoint_dir=ckpt_dir,
+        tokenizer_dir=tok_file,
+        agent_workspace_dir=tmp_path / "empty_ws",
+        api_key="test-secret-key",
+    )
+    empty_client = TestClient(empty_app)
+    empty_report = empty_client.post(
+        "/api/v1/agent/run",
+        headers=headers,
+        json={"goal": "inspect this project and verify tests", "max_iterations": 6},
+    ).json()
+    assert empty_report["status"] == "completed"
+    assert all("Error" not in json.dumps(t.get("tool_result", {})) for t in empty_report["traces"])
+    assert empty_client.get("/api/v1/workspace/files", headers=headers).json()["files"] == []
+
+    # 8. Verify Root Directory HTML Platform files & strictly relative URLs (Phase X Steps 81–90)
     repo_root = Path(__file__).resolve().parents[1]
     assert (repo_root / "index.html").is_file()
     assert (repo_root / "styles.css").is_file()
     assert (repo_root / "app.js").is_file()
+    assert (repo_root / "local-api.js").is_file()
 
-    for route in ("/", "/styles.css", "/app.js"):
+    for route in ("/", "/styles.css", "/app.js", "/local-api.js"):
         r = client.get(route)
         assert r.status_code == 200
         assert "X-Frame-Options" not in r.headers
+
+    assert "window.RootismLocal" in client.get("/local-api.js").text
 
     app_js_source = (repo_root / "app.js").read_text(encoding="utf-8")
     assert "localhost" not in app_js_source
     assert "127.0.0.1" not in app_js_source
     assert "./api/v1/chat/completions" in app_js_source
+    # Standalone/static preview safety: local bridge is always guarded.
+    assert "window.RootismLocal ||" in app_js_source
+    # Enter sends, Shift+Enter inserts a newline.
+    assert "!ev.shiftKey" in app_js_source
+
+    index_source = (repo_root / "index.html").read_text(encoding="utf-8")
+    assert "./local-api.js" in index_source
+    assert "Enter to send" in index_source
+    # Clean inline New-File flow (no modal browser prompts that iframes can suppress)
+    assert 'id="new-file-form"' in index_source
+    assert 'id="new-file-path-input"' in index_source
+    assert "window.prompt" not in app_js_source
+
+    styles_source = (repo_root / "styles.css").read_text(encoding="utf-8")
+    # Neutral black dark theme — no bluish slate palette anywhere.
+    for bluish in ("#0d1117", "#151b23", "#212830", "#010409", "#30363d"):
+        assert bluish not in styles_source
+    assert "--bg-app: #0a0a0a;" in styles_source
+    assert "prefers-reduced-motion" in styles_source
 
 
 def test_evaluation_benchmarks_generalization_and_regression(tmp_path: Path) -> None:

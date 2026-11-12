@@ -56,57 +56,13 @@ from rootism.server.schemas import (
 
 def seed_default_agent_workspace(workspace_dir: Path) -> None:
     """
-    Populate the isolated sandbox workspace with a genuine, testable multi-file Python + JS
-    mini-project (only if empty) so developers can immediately inspect symbols, edit code,
-    run real pytest verification, and exercise the multi-step coding agent safely.
+    Ensure the isolated sandbox workspace directory exists and is COMPLETELY EMPTY.
+
+    Rootism deliberately ships no starter/scaffold files: the initial project must be
+    a blank slate. Developers create their own files from the Workspace sidebar (or the
+    coding agent creates them), so nothing is ever pre-seeded here.
     """
     workspace_dir.mkdir(parents=True, exist_ok=True)
-    if any(workspace_dir.iterdir()):
-        return
-
-    (workspace_dir / "pyproject.toml").write_text(
-        '[project]\nname = "workspace-sample"\nversion = "0.1.0"\nrequires-python = ">=3.11"\n\n'
-        '[tool.pytest.ini_options]\npythonpath = ["."]\n',
-        encoding="utf-8",
-    )
-    (workspace_dir / "src").mkdir(parents=True, exist_ok=True)
-    (workspace_dir / "src" / "__init__.py").write_text("", encoding="utf-8")
-    (workspace_dir / "src" / "metrics.py").write_text(
-        '"""Latency percentile & token throughput utilities."""\n\n'
-        "from __future__ import annotations\n\n\n"
-        "def compute_p95_latency(samples_ms: list[float]) -> float:\n"
-        '    """Compute nearest-rank P95 latency in milliseconds."""\n'
-        "    if not samples_ms:\n"
-        '        raise ValueError("samples_ms must not be empty")\n'
-        "    ordered = sorted(samples_ms)\n"
-        "    idx = max(0, min(len(ordered) - 1, round(0.95 * (len(ordered) - 1))))\n"
-        "    return float(ordered[idx])\n\n\n"
-        "def tokens_per_second(token_count: int, elapsed_sec: float) -> float:\n"
-        "    if elapsed_sec <= 0:\n"
-        '        raise ValueError("elapsed_sec must be positive")\n'
-        "    return round(float(token_count) / float(elapsed_sec), 3)\n",
-        encoding="utf-8",
-    )
-    (workspace_dir / "src" / "ui_helpers.ts").write_text(
-        "export interface StreamStats {\n"
-        "  promptTokens: number;\n"
-        "  completionTokens: number;\n"
-        "  ttftMs: number;\n"
-        "}\n\n"
-        "export function formatThroughput(tokens: number, ms: number): string {\n"
-        "  if (ms <= 0) return '0.0 tok/s';\n"
-        "  return `${((tokens * 1000) / ms).toFixed(1)} tok/s`;\n"
-        "}\n",
-        encoding="utf-8",
-    )
-    (workspace_dir / "tests").mkdir(parents=True, exist_ok=True)
-    (workspace_dir / "tests" / "test_metrics.py").write_text(
-        "from src.metrics import compute_p95_latency, tokens_per_second\n\n\n"
-        "def test_metrics_calculations() -> None:\n"
-        "    assert compute_p95_latency([10.0, 20.0, 30.0, 40.0, 100.0]) == 100.0\n"
-        "    assert tokens_per_second(250, 2.0) == 125.0\n",
-        encoding="utf-8",
-    )
 
 
 class SlidingWindowRateLimiter:
@@ -186,6 +142,49 @@ def create_rootism_app(
     server_boot_ts = time.time()
 
     production_3b_cfg = RootismModelConfig()
+
+    def _weight_readiness() -> dict[str, Any]:
+        """Single source of truth for whether *trained* weights are actually loaded.
+
+        Rootism always boots a real `RootismForCausalLM` tensor runtime, but a freshly
+        initialized (step 0) checkpoint has processed 0 training tokens. In that case the
+        platform runs in an honest "standby" mode: workspace/agent tooling works, and chat
+        returns a clean explanation instead of pretending random weights are a model.
+        """
+        meta = engine.runtime_metadata()
+        processed = int(meta.get("processed_training_tokens", 0) or 0)
+        trained = processed > 0
+        return {
+            "weights_loaded": True,
+            "trained_weights": trained,
+            "model_ready": True,
+            "in_standby_mode": not trained,
+            "processed_training_tokens": processed,
+            "checkpoint_step": int(meta.get("checkpoint_step", 0) or 0),
+            "training_stage_tag": meta.get("training_stage_tag", "unknown"),
+            "checkpoint_dir": meta.get("checkpoint_dir", ""),
+        }
+
+    def _standby_message() -> str:
+        readiness = _weight_readiness()
+        return (
+            "Standby mode — the Rootism runtime is loaded and healthy, but the active checkpoint "
+            f"(`{readiness['training_stage_tag']}`, step {readiness['checkpoint_step']}) has "
+            f"{readiness['processed_training_tokens']:,} processed training tokens, so it has not "
+            "learned language yet and will not answer prompts.\n\n"
+            "Everything else already works: the Workspace, file editing, diffs, undo, symbol index, "
+            "chat history export, and the agent's inspection/sandbox tooling.\n\n"
+            "To turn on real generation:\n"
+            "1. `rootism train-tokenizer --input <corpus_dir> --output artifacts/prod/tokenizer/tokenizer.json --vocab-size 65536`\n"
+            "2. `rootism verify-licenses --registry configs/datasets/provenance_registry.yaml`\n"
+            "3. `rootism train-verify --config configs/training/pretrain_650b.yaml --steps <N> --checkpoint-dir checkpoints/rootism-3b`\n"
+            "   (multi-GPU: `torchrun --nproc_per_node=8 -m rootism.cli train-verify --config configs/training/pretrain_650b.yaml ...`)\n"
+            "4. Serve those weights:\n"
+            "   `rootism serve --host 0.0.0.0 --port 8000 --checkpoint-dir checkpoints/rootism-3b/step_XXXXXXXX --tokenizer-dir artifacts/prod/tokenizer`\n\n"
+            "As soon as a checkpoint reports processed_training_tokens > 0, this same server switches "
+            "to real neural generation automatically — no code changes needed. "
+            "Full walkthrough: docs/TRAINING_AND_WEIGHTS.md."
+        )
 
     app = FastAPI(
         title="Rootism Developer Platform & Inference API",
@@ -278,6 +277,7 @@ def create_rootism_app(
         # Health endpoint returns minimal info only — no runtime metadata leak
         with cancel_lock:
             in_flight = len(active_cancellations)
+        readiness = _weight_readiness()
         return {
             "status": "healthy",
             "ready": True,
@@ -285,27 +285,42 @@ def create_rootism_app(
             "in_flight_generations": in_flight,
             "max_concurrent_generations": max_concurrent_generations,
             "auth_required": auth_required,
+            "runtime": {
+                "device": str(engine.device),
+                "dtype": str(engine.dtype),
+                "quantization": engine.quantization,
+            },
+            **readiness,
         }
 
     @app.get("/api/v1/model/info", dependencies=[Depends(verify_auth_and_rate_limit)])
     async def model_info() -> dict[str, Any]:
         meta = engine.runtime_metadata()
-        processed_toks = meta["processed_training_tokens"]
+        readiness = _weight_readiness()
+        processed_toks = readiness["processed_training_tokens"]
         is_full_650b = processed_toks >= 600_000_000_000
+        if processed_toks <= 0:
+            banner = (
+                "Standby — runtime loaded, 0 trained tokens. "
+                "Workspace + agent tools are live; add trained weights to enable generation."
+            )
+        elif is_full_650b:
+            banner = f"Production Rootism-3B ({processed_toks:,} tokens trained)"
+        else:
+            banner = (
+                f"Active Checkpoint: {meta['training_stage_tag']} "
+                f"(step {meta['checkpoint_step']}, {processed_toks:,} processed tokens). "
+                "Real scratch RootismForCausalLM tensor runtime — full 650B cluster training pending."
+            )
         return {
             "active_runtime": meta,
+            "weight_readiness": readiness,
+            **readiness,
             "honest_training_status": {
                 "is_fully_pretrained_600b_plus": is_full_650b,
                 "processed_training_tokens": processed_toks,
-                "status_banner": (
-                    f"Production Rootism-3B ({processed_toks:,} tokens trained)"
-                    if is_full_650b
-                    else (
-                        f"Active Checkpoint: {meta['training_stage_tag']} "
-                        f"(step {meta['checkpoint_step']}, {processed_toks:,} processed tokens). "
-                        "Real scratch RootismForCausalLM tensor runtime — full 650B cluster training pending."
-                    )
-                ),
+                "trained_weights_loaded": readiness["trained_weights"],
+                "status_banner": banner,
             },
             "production_architecture_spec": {
                 "architecture_id": production_3b_cfg.architecture_id,
@@ -361,6 +376,57 @@ def create_rootism_app(
         cancel_ev = threading.Event()
         with cancel_lock:
             active_cancellations[req_id] = cancel_ev
+
+        standby = _weight_readiness()["in_standby_mode"]
+
+        if standby:
+            # Honest standby: never emit random-weight gibberish, never error.
+            try:
+                if req.stream:
+                    segments = ReasoningOutputFormatter.build_structured_prompt_segments(
+                        user_message=user_payload,
+                        mode=req.reasoning_mode,
+                        system_prompt=system_prompt,
+                        workspace_context=req.workspace_context,
+                    )
+                    raw_ids = engine.tokenizer.encode_structured(segments)
+                    _, ctx_report = engine.fit_to_context_window(raw_ids, req.max_tokens)
+                    notice = _standby_message()
+
+                    async def _standby_stream() -> Any:
+                        yield f"data: {json.dumps({'event': 'meta', 'request_id': req_id, 'context_window': ctx_report.to_dict(), 'standby': True, 'processed_training_tokens': 0})}\n\n"
+                        yield f"data: {json.dumps({'event': 'delta', 'request_id': req_id, 'text': notice, 'sanitized_text_so_far': notice, 'reasoning_summary_so_far': None, 'standby': True})}\n\n"
+                        yield f"data: {json.dumps({'event': 'done', 'request_id': req_id, 'finish_reason': 'standby_no_trained_weights', 'content': notice, 'reasoning_summary': None, 'standby': True, 'usage': {'prompt_tokens': ctx_report.effective_prompt_tokens, 'completion_tokens': 0, 'total_tokens': ctx_report.effective_prompt_tokens}, 'telemetry': {'ttft_ms': 0.0, 'total_latency_ms': 0.0, 'tokens_per_second': 0.0, 'kv_cache_bytes': 0, 'context_window': ctx_report.to_dict()}})}\n\n"
+
+                    return StreamingResponse(
+                        _standby_stream(),
+                        media_type="text/event-stream",
+                        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                    )
+                return {
+                    "id": req_id,
+                    "object": "rootism.chat.completion",
+                    "model": engine.config.model.architecture_id,
+                    "checkpoint_step": 0,
+                    "reasoning_mode": req.reasoning_mode,
+                    "standby": True,
+                    "message": {
+                        "role": "assistant",
+                        "content": _standby_message(),
+                        "reasoning_summary": None,
+                    },
+                    "finish_reason": "standby_no_trained_weights",
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                    "telemetry": {
+                        "ttft_ms": 0.0,
+                        "total_latency_ms": 0.0,
+                        "tokens_per_second": 0.0,
+                        "kv_cache_bytes": 0,
+                    },
+                }
+            finally:
+                with cancel_lock:
+                    active_cancellations.pop(req_id, None)
 
         if not req.stream:
             try:
@@ -526,6 +592,20 @@ def create_rootism_app(
     @app.post("/api/v1/code/complete", dependencies=[Depends(verify_auth_and_rate_limit)])
     async def code_complete(req: CodeCompletionRequest, request: Request) -> dict[str, Any]:
         req_id = getattr(request.state, "request_id", f"fim-{uuid.uuid4().hex[:10]}")
+        if _weight_readiness()["in_standby_mode"]:
+            return {
+                "id": req_id,
+                "completion": "",
+                "finish_reason": "standby_no_trained_weights",
+                "standby": True,
+                "note": (
+                    "No trained weights are loaded yet, so fill-in-the-middle completion is idle. "
+                    "Add a trained checkpoint with `rootism serve --checkpoint-dir ... --tokenizer-dir ...` "
+                    "and completions start working automatically."
+                ),
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+                "telemetry": {"ttft_ms": 0.0, "total_latency_ms": 0.0, "tokens_per_second": 0.0},
+            }
         sampling = GenerationSamplingParams(
             max_new_tokens=req.max_tokens,
             temperature=req.temperature,
@@ -575,13 +655,29 @@ def create_rootism_app(
             agent_tools.invoke, "read_file", {"path": path, "start_line": 1, "end_line": 2000}
         )
         if not res.ok:
-            raise HTTPException(status_code=404, detail=res.summary)
+            if res.payload.get("error_type") == "FileNotFoundError":
+                # A file that no longer exists (deleted, undone, never created) is a normal
+                # state for the editor, not an error: report it and let the UI show a blank slate.
+                return {
+                    "path": path,
+                    "exists": False,
+                    "total_lines": 0,
+                    "start_line": 1,
+                    "end_line": 0,
+                    "content": "",
+                    "numbered_content": "",
+                }
+            raise HTTPException(status_code=400, detail=res.summary)
         return res.payload
 
     @app.post("/api/v1/workspace/file", dependencies=[Depends(verify_auth_and_rate_limit)])
     async def workspace_save_file(req: WorkspaceFileSaveRequest) -> dict[str, Any]:
+        # An explicit editor save is user intent: it may overwrite the file the user is
+        # editing without an extra confirmation token. Path confinement still applies.
         res = await asyncio.to_thread(
-            agent_tools.invoke, "create_file", {"path": req.path, "content": req.content}
+            agent_tools.invoke,
+            "create_file",
+            {"path": req.path, "content": req.content, "overwrite": True},
         )
         if not res.ok:
             raise HTTPException(status_code=400, detail=res.summary)
@@ -590,9 +686,16 @@ def create_rootism_app(
     @app.post("/api/v1/workspace/revert", dependencies=[Depends(verify_auth_and_rate_limit)])
     async def workspace_revert() -> dict[str, Any]:
         res = await asyncio.to_thread(agent_tools.invoke, "revert_last_edit", {})
-        if not res.ok:
-            raise HTTPException(status_code=400, detail=res.summary)
-        return res.to_dict()
+        payload = res.to_dict()
+        # Undo with an empty history is a friendly no-op, never an HTTP error.
+        payload.update(
+            {
+                "reverted": bool(res.ok and res.payload.get("reverted_path")),
+                "reverted_path": res.payload.get("reverted_path"),
+                "message": res.summary,
+            }
+        )
+        return payload
 
     @app.post("/api/v1/agent/tool", dependencies=[Depends(verify_auth_and_rate_limit)])
     async def agent_invoke_tool(req: AgentToolInvokeRequest) -> dict[str, Any]:
@@ -680,19 +783,43 @@ def create_rootism_app(
                         tool_name="search_project",
                         tool_args={"pattern": term, "is_regex": False},
                     )
-                return AgentPlannedAction(
-                    phase="inspect",
-                    rationale="Read primary module `src/metrics.py` for context.",
-                    tool_name="read_file",
-                    tool_args={"path": "src/metrics.py", "start_line": 1, "end_line": 120},
-                )
-            if step_n == 2:
+                overview = _tools.invoke("inspect_project", {}).payload or {}
+                indexed = overview.get("indexed_files") or []
+                if indexed:
+                    target = indexed[0].get("path") or indexed[0]
+                    return AgentPlannedAction(
+                        phase="inspect",
+                        rationale=f"Read the first indexed workspace file `{target}` for context.",
+                        tool_name="read_file",
+                        tool_args={"path": target, "start_line": 1, "end_line": 200},
+                    )
+                # A brand-new empty project: nothing to read, so go straight to verification.
                 return AgentPlannedAction(
                     phase="test",
-                    rationale="Execute automated workspace test suite and run FailureDiagnosticsEngine.",
+                    rationale="Workspace is empty, so there is no source to read. Verify the test suite instead.",
                     tool_name="run_tests",
                     tool_args={},
                 )
+            if step_n == 2:
+                tests_trace = next((t for t in history if t.tool_name == "run_tests"), None)
+                read_trace = next((t for t in history if t.tool_name == "read_file"), None)
+                if tests_trace is not None:
+                    # Nothing left to inspect (empty project) — go straight to the summary.
+                    pass
+                elif read_trace is not None:
+                    return AgentPlannedAction(
+                        phase="test",
+                        rationale="Execute automated workspace test suite and run FailureDiagnosticsEngine.",
+                        tool_name="run_tests",
+                        tool_args={},
+                    )
+                else:
+                    return AgentPlannedAction(
+                        phase="inspect",
+                        rationale="No further source inspection needed for this workspace.",
+                        tool_name="list_files",
+                        tool_args={},
+                    )
 
             # Synthesize final step with real RootismInferenceEngine pass + verified tool telemetry
             test_trace = next((t for t in reversed(history) if t.tool_name == "run_tests"), None)
@@ -701,16 +828,22 @@ def create_rootism_app(
                 if test_trace and test_trace.tool_result
                 else "Inspection complete."
             )
-            gen = engine.generate_chat(
-                user_message=f"Task: {goal}\nTest verification status: {diag_summary}",
-                reasoning_mode=req.reasoning_mode,
-                params=GenerationSamplingParams(max_new_tokens=32, temperature=0.2),
-            )
-            summary_body = (
-                f"Workspace verification: {diag_summary} | "
-                f"Rootism model pass ({gen.completion_tokens} tokens, {gen.tokens_per_second} tok/s): "
-                f"{gen.visible_answer[:240]}"
-            )
+            if _weight_readiness()["in_standby_mode"]:
+                summary_body = (
+                    f"Agent run complete. Workspace verification: {diag_summary} "
+                    "(model in standby — add trained weights to enable neural summaries)."
+                )
+            else:
+                gen = engine.generate_chat(
+                    user_message=f"Task: {goal}\nTest verification status: {diag_summary}",
+                    reasoning_mode=req.reasoning_mode,
+                    params=GenerationSamplingParams(max_new_tokens=32, temperature=0.2),
+                )
+                summary_body = (
+                    f"Workspace verification: {diag_summary} | "
+                    f"Rootism model pass ({gen.completion_tokens} tokens, {gen.tokens_per_second} tok/s): "
+                    f"{gen.visible_answer[:240]}"
+                )
             return AgentPlannedAction(
                 phase="summarise",
                 rationale=summary_body,
@@ -742,6 +875,13 @@ def create_rootism_app(
         js_path = ui_root / "app.js"
         if not js_path.is_file():
             raise HTTPException(status_code=404, detail="Root app.js not found.")
+        return FileResponse(js_path, media_type="application/javascript", headers={"Cache-Control": "no-cache"})
+
+    @app.api_route("/local-api.js", methods=["GET", "HEAD"])
+    async def serve_root_local_api_js() -> FileResponse:
+        js_path = ui_root / "local-api.js"
+        if not js_path.is_file():
+            raise HTTPException(status_code=404, detail="Root local-api.js not found.")
         return FileResponse(js_path, media_type="application/javascript", headers={"Cache-Control": "no-cache"})
 
     return app

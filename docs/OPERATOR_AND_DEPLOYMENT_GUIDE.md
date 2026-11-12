@@ -124,10 +124,37 @@ rootism serve \
 ```
 When `--checkpoint-dir` and `--tokenizer-dir` are omitted on a fresh developer machine, `bootstrap_local_serving_artifacts` initializes a cryptographically verified local `RootismForCausalLM` checkpoint and `RootismTokenizer` in `artifacts/local_runtime` and **explicitly labels** the UI and `/api/v1/model/info` banner with its exact step and processed training tokens (`0` until trained).
 
-### 6.2 Key Endpoints
+To serve weights you have trained (see [`docs/TRAINING_AND_WEIGHTS.md`](TRAINING_AND_WEIGHTS.md)):
+
+```bash
+rootism serve \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --checkpoint-dir checkpoints/rootism-3b/step_00001234 \
+  --tokenizer-dir artifacts/prod/tokenizer
+```
+
+`/api/v1/health` reports the readiness of the loaded runtime:
+
+| Field | Meaning |
+| :--- | :--- |
+| `weights_loaded` | A real `RootismForCausalLM` tensor runtime is loaded in this process |
+| `trained_weights` / `in_standby_mode` | `false`/`true` until a checkpoint with `processed_training_tokens > 0` is served |
+| `processed_training_tokens` | Exact tokens seen by the loaded checkpoint |
+
+While `in_standby_mode` is `true`, chat/FIM return a clean explanatory message (never random-weight gibberish) and every workspace/agent endpoint still works. Serving a trained `step_*` directory switches the same process to real generation immediately.
+
+### 6.2 Offline / Static Preview Mode
+The studio ships `local-api.js`, which implements `window.RootismLocal` on top of
+`localStorage`. If `/api/v1/*` is unreachable (pure static hosting, no backend), the UI
+automatically falls back to it: file create/read/save, per-edit undo, symbol index, sessions,
+and exports keep working in the browser, while chat/FIM explain that a backend is required.
+The bridged workspace starts **completely empty** — no scaffold files are ever created.
+
+### 6.3 Key Endpoints
 | Endpoint | Method | Purpose |
 | :--- | :--- | :--- |
-| `/` | `GET` | Serves Root-Directory HTML Developer Platform (`index.html`, `styles.css`, `app.js`) |
+| `/` | `GET` | Serves Root-Directory HTML Developer Platform (`index.html`, `styles.css`, `app.js`, `local-api.js`) |
 | `/api/v1/health` | `GET` | Liveness, readiness, device/dtype/quantization, concurrency slots |
 | `/api/v1/model/info` | `GET` | Honest training status, verified `Rootism-3B` breakdown, 19 languages, 5 reasoning modes |
 | `/api/v1/chat/completions` | `POST` | Synchronous JSON or SSE `text/event-stream` chat & structured reasoning generation |

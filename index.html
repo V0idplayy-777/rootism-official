@@ -115,12 +115,12 @@
         <textarea
           id="chat-input"
           rows="3"
-          placeholder="Ask something. Ctrl/Cmd+Enter to send."
+          placeholder="Ask something… (Enter to send, Shift+Enter for new line)"
           required
         ></textarea>
         <div class="composer-footer">
           <span id="composer-hint" class="muted-small">
-            Ctrl/Cmd+Enter to send, Esc to stop
+            Enter to send, Shift+Enter for new line, Esc to stop
           </span>
           <div class="composer-buttons">
             <button type="button" id="stop-stream-btn" class="danger-btn hidden">Stop</button>
@@ -135,7 +135,7 @@
         <div class="panel-toolbar">
           <div class="toolbar-left">
             <strong>Workspace</strong>
-            <span id="active-file-badge" class="code-badge">src/metrics.py</span>
+            <span id="active-file-badge" class="code-badge">No file open</span>
           </div>
           <div class="toolbar-right">
             <button id="new-file-btn" class="ghost-btn small-btn">+ File</button>
@@ -151,6 +151,18 @@
               <span>Files</span>
               <button id="refresh-files-btn" class="link-btn" title="Refresh workspace index">Refresh</button>
             </div>
+            <form id="new-file-form" class="new-file-form hidden" autocomplete="off">
+              <input
+                id="new-file-path-input"
+                class="new-file-input"
+                type="text"
+                placeholder="path/to/file.py"
+                aria-label="New file path"
+                spellcheck="false"
+              />
+              <button type="submit" class="primary-btn small-btn">Create</button>
+              <button type="button" id="new-file-cancel" class="ghost-btn small-btn">Cancel</button>
+            </form>
             <ul id="workspace-file-list" class="file-list"></ul>
             <div class="pane-header symbols-header">Symbols</div>
             <ul id="workspace-symbol-list" class="symbol-list"></ul>
@@ -163,6 +175,7 @@
                 id="code-editor"
                 class="code-editor"
                 spellcheck="false"
+                placeholder="Click '+ File' to create a file in your project…"
                 aria-label="Source code editor"
               ></textarea>
             </div>
@@ -195,7 +208,7 @@
             id="agent-goal-input"
             class="text-input"
             placeholder="What should the agent do?"
-            value="Inspect project symbols, verify compute_p95_latency, and run pytest suite"
+            value="Inspect project layout and verify workspace tests"
           />
           <label for="agent-max-iter" class="toolbar-label">Max steps</label>
           <input type="number" id="agent-max-iter" class="num-input" value="6" min="1" max="16" />

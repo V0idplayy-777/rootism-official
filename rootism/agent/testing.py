@@ -174,6 +174,13 @@ class AgentTestVerifier:
             return "go test ./..."
         return f'"{sys.executable}" -m unittest discover'
 
+    def workspace_has_files(self) -> bool:
+        root = self.sandbox.safety_guard.workspace_root
+        try:
+            return any(path.is_file() for path in root.rglob("*"))
+        except OSError:  # pragma: no cover - unreadable workspace
+            return False
+
     def run_verification(
         self,
         test_command: str | None = None,
@@ -181,8 +188,50 @@ class AgentTestVerifier:
         timeout_sec: float = 25.0,
     ) -> tuple[SandboxExecutionResult, FailureDiagnosis]:
         cmd = test_command or self.detect_default_test_command()
+        root = self.sandbox.safety_guard.workspace_root
+
+        # A brand-new, completely empty project has nothing to verify. Report a clean,
+        # passing no-op instead of surfacing a runner error to the user.
+        if test_command is None and not self.workspace_has_files():
+            decision = self.sandbox.safety_guard.evaluate_command(cmd)
+            res = SandboxExecutionResult(
+                command=cmd,
+                cwd=str(root),
+                executed=True,
+                timed_out=False,
+                exit_code=0,
+                stdout="Workspace is empty — no tests to run yet. Create a file to get started.",
+                stderr="",
+                output_truncated=False,
+                duration_ms=0.0,
+                safety_decision=decision,
+            )
+            return res, FailureDiagnosis(
+                passed=True,
+                category="NO_TESTS_COLLECTED",
+                error_type="None",
+                file_location=None,
+                line_number=None,
+                summary="Workspace is empty — nothing to test yet.",
+                suggested_repair_focus="None required.",
+            )
+
         res = self.sandbox.run(cmd, timeout_sec=timeout_sec)
         diag = FailureDiagnosticsEngine.diagnose(res)
+
+        # pytest exits with code 5 when zero tests are collected; that is not a failure.
+        if not diag.passed and res.exit_code == 5:
+            combined = f"{res.stdout}\n{res.stderr}".lower()
+            if "no tests ran" in combined or "collected 0 items" in combined:
+                diag = FailureDiagnosis(
+                    passed=True,
+                    category="NO_TESTS_COLLECTED",
+                    error_type="None",
+                    file_location=None,
+                    line_number=None,
+                    summary="No tests were collected — nothing to verify yet.",
+                    suggested_repair_focus="None required.",
+                )
         return res, diag
 
     def synthesize_python_smoke_test(self, target_rel_path: str) -> tuple[str, str]:

@@ -7,7 +7,7 @@
   const state = {
     sessions: [],
     activeSessionId: null,
-    activeFilePath: "src/metrics.py",
+    activeFilePath: "",
     activeFileContent: "",
     activeRequestId: null,
     abortController: null,
@@ -19,7 +19,50 @@
   const $ = (id) => document.getElementById(id);
 
   const STORAGE_API_BASE_KEY = "rootism_studio_api_base_v1";
-  const local = window.RootismLocal;
+
+  // Defensive fallback: if ./local-api.js ever fails to load (network hiccup, CDN,
+  // stripped static host), the studio must still function for editing every request
+  // path instead of throwing `Cannot read properties of undefined (reading 'active')`.
+  const local = window.RootismLocal || {
+    active: false,
+    chatNotice: () =>
+      "No backend connected. Files, diffs, undo, and history still work locally.",
+    resetWorkspace() {},
+    async handle(relativePath) {
+      const pathOnly = String(relativePath || "").split("?")[0];
+      if (pathOnly.endsWith("/health")) {
+        return {
+          status: "local_only",
+          ready: true,
+          uptime_seconds: 0,
+          in_flight_generations: 0,
+          max_concurrent_generations: 1,
+          auth_required: false,
+          runtime: { device: "local-browser" },
+        };
+      }
+      if (pathOnly.endsWith("/workspace/files")) {
+        return {
+          workspace_root: "browser://local-workspace",
+          files: [],
+          overview: { symbol_to_files: {} },
+          rollback_depth: 0,
+        };
+      }
+      if (pathOnly.endsWith("/workspace/file")) {
+        return {
+          path: "",
+          exists: false,
+          total_lines: 0,
+          start_line: 1,
+          end_line: 0,
+          content: "",
+          numbered_content: "",
+        };
+      }
+      return { ok: true };
+    },
+  };
 
   function apiBase() {
     return (localStorage.getItem(STORAGE_API_BASE_KEY) || "").trim().replace(/\/+$/, "");
@@ -121,10 +164,16 @@
 
   // --- Theme & View Layout ---
   function initThemeAndTabs() {
-    const savedTheme =
-      localStorage.getItem(STORAGE_THEME_KEY) ||
-      (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
-    setTheme(savedTheme);
+    const prefersLight =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-color-scheme: light)").matches;
+    let savedTheme = null;
+    try {
+      savedTheme = localStorage.getItem(STORAGE_THEME_KEY);
+    } catch (_err) {
+      savedTheme = null;
+    }
+    setTheme(savedTheme || (prefersLight ? "light" : "dark"));
 
     $("theme-toggle-btn").addEventListener("click", () => {
       const cur = document.documentElement.getAttribute("data-theme") || "dark";
@@ -500,9 +549,16 @@
         fileUl.appendChild(li);
       });
 
+      if (!(data.files || []).length) {
+        const emptyLi = document.createElement("li");
+        emptyLi.className = "empty-hint";
+        emptyLi.textContent = "No files yet — click + File to start your project.";
+        fileUl.appendChild(emptyLi);
+      }
+
       const symUl = $("workspace-symbol-list");
       symUl.innerHTML = "";
-      const symMap = data.overview?.symbol_to_files || {};
+      const symMap = (data && data.overview && data.overview.symbol_to_files) || {};
       Object.entries(symMap).slice(0, 40).forEach(([sym, paths]) => {
         const li = document.createElement("li");
         li.className = "symbol-entry";
@@ -511,34 +567,91 @@
         li.addEventListener("click", () => openWorkspaceFile(paths[0]));
         symUl.appendChild(li);
       });
+      if (!symUl.children.length) {
+        const emptySym = document.createElement("li");
+        emptySym.className = "empty-hint";
+        emptySym.textContent = "No symbols yet.";
+        symUl.appendChild(emptySym);
+      }
     } catch (err) {
       showAlert(`Failed to list workspace files: ${err.message}`);
     }
   }
 
+  function showEmptyEditorState() {
+    state.activeFilePath = "";
+    state.activeFileContent = "";
+    $("active-file-badge").textContent = "No file open";
+    $("code-editor").value = "";
+    $("editor-gutter").textContent = "";
+    updateEditorGutter();
+  }
+
   async function openWorkspaceFile(relPath) {
+    const target = String(relPath || "").trim();
+    if (!target) {
+      showEmptyEditorState();
+      return;
+    }
     try {
-      const res = await apiFetch(`./api/v1/workspace/file?path=${encodeURIComponent(relPath)}`);
-      state.activeFilePath = res.path;
-      state.activeFileContent = res.content;
-      $("active-file-badge").textContent = res.path;
-      $("code-editor").value = res.content;
+      const res = await apiFetch(`./api/v1/workspace/file?path=${encodeURIComponent(target)}`);
+      if (!res || res.exists === false) {
+        // File disappeared (renamed elsewhere / fresh local workspace): stay quiet and empty.
+        showEmptyEditorState();
+        return;
+      }
+      state.activeFilePath = res.path || target;
+      state.activeFileContent = res.content || "";
+      $("active-file-badge").textContent = state.activeFilePath;
+      $("code-editor").value = state.activeFileContent;
       updateEditorGutter();
       refreshWorkspaceFiles();
-    } catch (err) {
-      showAlert(`Cannot read ${relPath}: ${err.message}`);
+    } catch (_err) {
+      showEmptyEditorState();
     }
+  }
+
+  function openNewFileForm() {
+    $("new-file-form").classList.remove("hidden");
+    const input = $("new-file-path-input");
+    input.value = "";
+    input.focus();
+  }
+
+  function closeNewFileForm() {
+    $("new-file-form").classList.add("hidden");
+    $("new-file-path-input").value = "";
+  }
+
+  async function createNewWorkspaceFile(relPath) {
+    const clean = String(relPath || "").trim().replace(/^\/+/, "").replace(/\/+/g, "/");
+    if (!clean) {
+      $("new-file-path-input").focus();
+      return;
+    }
+    state.activeFilePath = clean;
+    state.activeFileContent = "";
+    $("active-file-badge").textContent = clean;
+    $("code-editor").value = "";
+    updateEditorGutter();
+    closeNewFileForm();
+    await saveActiveWorkspaceFile();
+    $("code-editor").focus();
   }
 
   async function saveActiveWorkspaceFile() {
     const content = $("code-editor").value;
+    if (!state.activeFilePath) {
+      openNewFileForm();
+      return;
+    }
     try {
       const res = await apiFetch("./api/v1/workspace/file", {
         method: "POST",
         body: JSON.stringify({ path: state.activeFilePath, content }),
       });
       state.activeFileContent = content;
-      if (res.payload?.unified_diff) {
+      if (res && res.payload && res.payload.unified_diff) {
         renderUnifiedDiff(res.payload.unified_diff);
       }
       await refreshWorkspaceFiles();
@@ -575,6 +688,10 @@
         method: "POST",
         body: JSON.stringify({ prefix, suffix, max_tokens: 40, temperature: 0.15 }),
       });
+      if (res && res.standby) {
+        showAlert(res.note || "No trained weights yet — add a checkpoint to enable completion.");
+        return;
+      }
       const insertion = res.completion || "";
       editor.value = prefix + insertion + suffix;
       state.activeFileContent = editor.value;
@@ -628,7 +745,7 @@
 
     const footer = document.createElement("div");
     footer.className = "trace-item";
-    footer.innerHTML = `<strong>Run Status: ${escapeHtml(report.status.toUpperCase())}</strong> &mdash; ${escapeHtml(report.stop_reason)}`;
+    footer.innerHTML = `<strong>Run Status: ${escapeHtml(String(report.status || "completed").toUpperCase())}</strong> &mdash; ${escapeHtml(report.stop_reason || "")}`;
     log.appendChild(footer);
 
     if (report.unified_diffs && report.unified_diffs.length > 0) {
@@ -664,22 +781,45 @@
   async function loadHealthAndSpec() {
     const pill = $("health-pill");
     local.active = false;
-    try {
-      const health = await apiFetch("./api/v1/health");
-      pill.className = "status-pill status-online";
-      pill.innerHTML = `<span class="dot"></span> Online (${escapeHtml(health.runtime.device.toUpperCase())})`;
 
-      const info = await apiFetch("./api/v1/model/info");
-      state.modelInfo = info;
-      $("runtime-honesty-banner").textContent = info.honest_training_status.status_banner;
-      renderArchitectureSpec(info);
-    } catch (err) {
+    let health = null;
+    try {
+      health = await apiFetch("./api/v1/health");
+    } catch (_err) {
+      health = null;
+    }
+
+    if (!health) {
       local.active = true;
       pill.className = "status-pill status-static";
       pill.innerHTML = `<span class="dot"></span> No backend`;
       $("runtime-honesty-banner").textContent = apiBase()
         ? `Can't reach ${apiBase()}. Editor works, chat needs a model.`
         : "No backend connected. Editor works, chat needs a model.";
+      renderStaticSpec();
+      return;
+    }
+
+    const device = String((health.runtime && health.runtime.device) || "cpu").toUpperCase();
+    pill.className = "status-pill status-online";
+    pill.innerHTML = `<span class="dot"></span> Online (${escapeHtml(device)})`;
+
+    if (health.in_standby_mode) {
+      $("runtime-honesty-banner").textContent =
+        "Standby — runtime loaded, no trained weights yet. Workspace + agent tools are live.";
+    }
+
+    try {
+      const info = await apiFetch("./api/v1/model/info");
+      state.modelInfo = info;
+      const banner =
+        info && info.honest_training_status && info.honest_training_status.status_banner;
+      if (banner) {
+        $("runtime-honesty-banner").textContent = banner;
+      }
+      renderArchitectureSpec(info);
+    } catch (_err) {
+      // Model spec is cosmetic — never escalate it to a user-facing error.
       renderStaticSpec();
     }
   }
@@ -759,7 +899,8 @@
     });
 
     $("chat-input").addEventListener("keydown", (ev) => {
-      if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") {
+      // Enter sends; Shift+Enter inserts a newline. IME composition is never interrupted.
+      if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing && ev.keyCode !== 229) {
         ev.preventDefault();
         $("chat-composer").requestSubmit();
       }
@@ -836,11 +977,13 @@
 
     $("export-json-btn").addEventListener("click", () => {
       const sess = activeSession();
+      if (!sess) return;
       downloadBlob(`${sess.id}.json`, JSON.stringify(sess, null, 2), "application/json");
     });
 
     $("export-md-btn").addEventListener("click", () => {
       const sess = activeSession();
+      if (!sess) return;
       const md = sess.messages
         .map((m) => `### ${m.role.toUpperCase()}\n\n${m.reasoning_summary ? `> Summary: ${m.reasoning_summary}\n\n` : ""}${m.content}\n`)
         .join("\n---\n\n");
@@ -857,22 +1000,34 @@
     $("fim-complete-btn").addEventListener("click", runFimAtCursor);
     $("close-diff-btn").addEventListener("click", () => $("diff-drawer").classList.add("hidden"));
 
-    $("new-file-btn").addEventListener("click", async () => {
-      const rel = window.prompt("New relative workspace path (e.g. src/new_helper.py):", "src/helper.py");
-      if (!rel) return;
-      state.activeFilePath = rel.trim();
-      $("active-file-badge").textContent = state.activeFilePath;
-      $("code-editor").value = "# Created in Rootism Studio\n";
-      updateEditorGutter();
-      await saveActiveWorkspaceFile();
+    $("new-file-btn").addEventListener("click", openNewFileForm);
+
+    $("new-file-form").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      await createNewWorkspaceFile($("new-file-path-input").value);
+    });
+
+    $("new-file-cancel").addEventListener("click", closeNewFileForm);
+
+    $("new-file-path-input").addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        closeNewFileForm();
+      }
     });
 
     $("revert-edit-btn").addEventListener("click", async () => {
       try {
         const res = await apiFetch("./api/v1/workspace/revert", { method: "POST" });
         await refreshWorkspaceFiles();
-        if (res.payload?.reverted_path) {
-          await openWorkspaceFile(state.activeFilePath);
+        const revertedPath =
+          res && res.payload && res.payload.reverted_path ? res.payload.reverted_path : null;
+        if (revertedPath) {
+          if (state.activeFilePath === revertedPath || !state.activeFilePath) {
+            await openWorkspaceFile(revertedPath);
+          }
+        } else {
+          showAlert("Nothing to undo yet.");
         }
       } catch (err) {
         showAlert(`Rollback note: ${err.message}`);
@@ -887,15 +1042,19 @@
     });
 
     $("quick-inspect-btn").addEventListener("click", async () => {
-      const res = await apiFetch("./api/v1/agent/tool", {
-        method: "POST",
-        body: JSON.stringify({ tool_name: "inspect_project", args: {} }),
-      });
-      renderAgentReport({
-        status: "completed",
-        stop_reason: res.summary,
-        traces: [{ step_index: 1, phase: "inspect", rationale: "Repository symbol & manifest scan", tool_name: "inspect_project", tool_result: res }],
-      });
+      try {
+        const res = await apiFetch("./api/v1/agent/tool", {
+          method: "POST",
+          body: JSON.stringify({ tool_name: "inspect_project", args: {} }),
+        });
+        renderAgentReport({
+          status: "completed",
+          stop_reason: res.summary || "Workspace inspected.",
+          traces: [{ step_index: 1, phase: "inspect", rationale: "Repository symbol & manifest scan", tool_name: "inspect_project", tool_result: res }],
+        });
+      } catch (err) {
+        showAlert(`Inspection unavailable: ${err.message}`);
+      }
     });
 
     $("quick-pytest-btn").addEventListener("click", async () => {
@@ -969,10 +1128,12 @@
       localStorage.setItem(STORAGE_API_BASE_KEY, baseInput.value.trim());
       await loadHealthAndSpec();
       await refreshWorkspaceFiles();
-      await openWorkspaceFile(state.activeFilePath);
+      if (state.activeFilePath) {
+        await openWorkspaceFile(state.activeFilePath);
+      }
     });
     await loadHealthAndSpec();
     await refreshWorkspaceFiles();
-    await openWorkspaceFile("src/metrics.py");
+    showEmptyEditorState();
   });
 })();
