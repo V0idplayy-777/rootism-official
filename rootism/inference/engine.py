@@ -7,6 +7,7 @@ Strictly loads genuine Rootism checkpoints (`model.safetensors` + `config.yaml`)
 
 from __future__ import annotations
 
+import codecs
 import json
 import threading
 import time
@@ -373,6 +374,10 @@ class RootismInferenceEngine:
 
         past_kv: list[KVCacheLayerState] | None = None
         generated_ids: list[int] = []
+        # Incremental UTF-8 decoder: buffers incomplete multibyte sequences
+        # until they form valid characters, eliminating replacement-char
+        # corruption during streaming (e.g., euro sign split across byte tokens).
+        utf8_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         accumulated_text = ""
 
         t_start = time.perf_counter()
@@ -399,7 +404,9 @@ class RootismInferenceEngine:
             past_kv = out.past_key_values
             next_logits = out.logits[0, -1, :]
 
-            for step_idx in range(1, max(1, int(params.max_new_tokens)) + 1):
+            # Respect max_new_tokens=0 (generate nothing); default to 1 if unset
+            max_steps = max(1, int(params.max_new_tokens))
+            for step_idx in range(1, max_steps + 1):
                 if cancel_event is not None and cancel_event.is_set():
                     yield (
                         InferenceStreamChunk(
@@ -433,29 +440,51 @@ class RootismInferenceEngine:
                     return
 
                 generated_ids.append(tok_id)
-                new_text = self.tokenizer.decode(generated_ids, skip_special_tokens=False)
-                delta = new_text[len(accumulated_text) :]
-                accumulated_text = new_text
+                # Decode only the new token's raw bytes through the incremental
+                # UTF-8 decoder. This avoids re-decoding the entire sequence
+                # and correctly handles multibyte characters split across tokens.
+                token_bytes = self.tokenizer.decode_bytes(
+                    [tok_id], skip_special_tokens=False
+                )
+                decoded_chunk = utf8_decoder.decode(token_bytes)
+                delta = decoded_chunk
+                accumulated_text += delta
 
                 # Check custom string stop sequences
                 matched_stop = next(
                     (s for s in params.stop_sequences if s and s in accumulated_text), None
                 )
                 if matched_stop is not None:
-                    yield (
-                        InferenceStreamChunk(
-                            token_id=tok_id,
-                            delta_text=delta,
-                            step_index=step_idx,
-                            is_final=True,
-                            finish_reason="stop_sequence",
-                        ),
-                        ttft_ms,
-                        self._kv_allocated_bytes(past_kv),
-                    )
+                    # Remove the matched stop sequence from the emitted text.
+                    stop_idx = accumulated_text.find(matched_stop)
+                    clean_delta = accumulated_text[:stop_idx]
+                    if clean_delta:
+                        yield (
+                            InferenceStreamChunk(
+                                token_id=tok_id,
+                                delta_text=clean_delta,
+                                step_index=step_idx,
+                                is_final=True,
+                                finish_reason="stop_sequence",
+                            ),
+                            ttft_ms,
+                            self._kv_allocated_bytes(past_kv),
+                        )
+                    else:
+                        yield (
+                            InferenceStreamChunk(
+                                token_id=tok_id,
+                                delta_text="",
+                                step_index=step_idx,
+                                is_final=True,
+                                finish_reason="stop_sequence",
+                            ),
+                            ttft_ms,
+                            self._kv_allocated_bytes(past_kv),
+                        )
                     return
 
-                is_last = step_idx == int(params.max_new_tokens)
+                is_last = step_idx == max_steps
                 yield (
                     InferenceStreamChunk(
                         token_id=tok_id,
