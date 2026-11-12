@@ -62,61 +62,240 @@ class LicenseDecision:
         return data
 
 
+_SPDX_TOKEN_RE = re.compile(
+    r"\(|\)|\bAND\b|\bOR\b|\bWITH\b|[A-Za-z0-9][A-Za-z0-9.-]*"
+)
+
+
+def _tokenize_spdx(expr: str) -> list[tuple[str, str]]:
+    """Tokenize an SPDX expression into ``(type, value)`` pairs.
+
+    Raises ``ValueError`` if any non-whitespace character is not part of a
+    recognised token (identifier, operator, or parenthesis).
+    """
+    tokens: list[tuple[str, str]] = []
+    last_end = 0
+    for m in _SPDX_TOKEN_RE.finditer(expr):
+        gap = expr[last_end : m.start()]
+        if gap.strip():
+            raise ValueError(f"Unexpected character(s) in SPDX expression: {gap!r}")
+        val = m.group(0)
+        if val == "(":
+            tokens.append(("LPAREN", val))
+        elif val == ")":
+            tokens.append(("RPAREN", val))
+        elif val == "AND":
+            tokens.append(("AND", val))
+        elif val == "OR":
+            tokens.append(("OR", val))
+        elif val == "WITH":
+            tokens.append(("WITH", val))
+        else:
+            tokens.append(("LIC", val))
+        last_end = m.end()
+    tail = expr[last_end:]
+    if tail.strip():
+        raise ValueError(f"Unexpected trailing character(s) in SPDX expression: {tail!r}")
+    if not tokens:
+        raise ValueError("Empty SPDX expression")
+    return tokens
+
+
+class _SpdxExpressionParser:
+    """Recursive-descent parser for SPDX license expressions.
+
+    Grammar (AND binds tighter than OR, per SPDX spec):
+        expression := or_expr
+        or_expr    := and_expr (OR and_expr)*
+        and_expr   := term (AND term)*
+        term       := LPAREN expression RPAREN
+                    | LICENSE_ID
+    """
+
+    def __init__(self, tokens: list[tuple[str, str]]) -> None:
+        self._tokens = tokens
+        self._pos = 0
+        self._error: str | None = None
+
+    def _peek(self) -> tuple[str, str] | None:
+        if self._pos < len(self._tokens):
+            return self._tokens[self._pos]
+        return None
+
+    def _advance(self) -> tuple[str, str] | None:
+        tok = self._peek()
+        if tok is not None:
+            self._pos += 1
+        return tok
+
+    @property
+    def error(self) -> str | None:
+        return self._error
+
+    def parse(self) -> tuple | None:
+        node = self._parse_or()
+        if self._error is None and self._pos < len(self._tokens):
+            self._error = f"Unexpected trailing token '{self._tokens[self._pos][1]}'"
+            return None
+        return node
+
+    def _parse_or(self) -> tuple | None:
+        node = self._parse_and()
+        if node is None or self._error is not None:
+            return None
+        while self._peek() is not None and self._peek()[0] == "OR":
+            self._advance()
+            rhs = self._parse_and()
+            if rhs is None:
+                return None
+            node = ("OR", node, rhs)
+        return node
+
+    def _parse_and(self) -> tuple | None:
+        node = self._parse_term()
+        if node is None or self._error is not None:
+            return None
+        while self._peek() is not None and self._peek()[0] == "AND":
+            self._advance()
+            rhs = self._parse_term()
+            if rhs is None:
+                return None
+            node = ("AND", node, rhs)
+        return node
+
+    def _parse_term(self) -> tuple | None:
+        tok = self._peek()
+        if tok is None:
+            self._error = "Unexpected end of expression"
+            return None
+        if tok[0] == "LPAREN":
+            self._advance()
+            node = self._parse_or()
+            if node is None:
+                return None
+            tok = self._peek()
+            if tok is None or tok[0] != "RPAREN":
+                self._error = "Expected ')' to close parenthesised expression"
+                return None
+            self._advance()
+            return node
+        if tok[0] == "LIC":
+            self._advance()
+            lic_val = tok[1]
+            # SPDX WITH: `License WITH Exception` (postfix, not binary)
+            next_tok = self._peek()
+            if next_tok is not None and next_tok[0] == "WITH":
+                self._advance()
+                exc_tok = self._peek()
+                if exc_tok is None or exc_tok[0] != "LIC":
+                    self._error = "WITH operator requires a following license identifier"
+                    return None
+                self._advance()
+                return ("WITH", ("LIC", lic_val), ("LIC", exc_tok[1]))
+            return ("LIC", lic_val)
+        if tok[0] == "WITH":
+            self._error = "WITH operator requires a preceding license identifier"
+            return None
+        self._error = f"Unexpected token '{tok[1]}'"
+        return None
+
+
+def _evaluate_spdx_ast(ast: tuple) -> tuple[bool, list[str], bool, str | None]:
+    """Evaluate a parsed SPDX AST.
+
+    Returns ``(satisfiable, elected_licenses, requires_attribution, rejection_reason)``.
+    - AND: all sub-expressions must be satisfiable; elected = union of all.
+    - OR: at least one sub-expression must be satisfiable; elect first satisfiable branch.
+    - LIC: satisfiable iff in APPROVED_COMMERCIAL_SPDX with commercial_allowed=True.
+    - WITH: evaluates the left (license) side only.
+    """
+    kind = ast[0]
+
+    if kind == "LIC":
+        lic = ast[1]
+        rule = APPROVED_COMMERCIAL_SPDX.get(lic)
+        if rule is None:
+            return (False, [], False, f"Unknown or unverified license identifier '{lic}'")
+        if not rule.commercial_allowed:
+            return (False, [], False, f"License '{lic}' is not permitted for commercial use")
+        return (True, [lic], rule.requires_attribution, None)
+
+    if kind == "AND":
+        left = _evaluate_spdx_ast(ast[1])
+        right = _evaluate_spdx_ast(ast[2])
+        if left[0] and right[0]:
+            return (True, left[1] + right[1], left[2] or right[2], None)
+        reasons = [r for _, _, _, r in (left, right) if r is not None]
+        return (False, [], False, "; ".join(reasons) if reasons else "AND clause not satisfiable")
+
+    if kind == "OR":
+        left = _evaluate_spdx_ast(ast[1])
+        if left[0]:
+            return (True, left[1], left[2], None)
+        right = _evaluate_spdx_ast(ast[2])
+        if right[0]:
+            return (True, right[1], right[2], None)
+        reasons = [r for _, _, _, r in (left, right) if r is not None]
+        return (False, [], False, "; ".join(reasons) if reasons else "OR clause not satisfiable")
+
+    if kind == "WITH":
+        return _evaluate_spdx_ast(ast[1])
+
+    return (False, [], False, "Internal error evaluating SPDX expression")
+
+
 def evaluate_spdx_expression(expression: str) -> LicenseDecision:
     """
-    Evaluate a single SPDX identifier or compound boolean expression (`AND` / `OR`).
-    Parentheses are rejected if malformed; unknown identifiers are strictly rejected.
+    Evaluate a single SPDX identifier or compound boolean expression.
+
+    Supports the full SPDX expression grammar:
+    - ``MIT`` — single identifier
+    - ``MIT AND Apache-2.0`` — both must be approved
+    - ``MIT OR GPL-2.0-only`` — at least one must be approved (elects first approved)
+    - ``(MIT OR Apache-2.0) AND GPL-3.0-only`` — correct precedence with parentheses
+
+    Operator precedence: AND binds tighter than OR.
+    Malformed expressions are rejected.
     """
     cleaned = (expression or "").strip()
     if not cleaned:
         return LicenseDecision(
-            expression="",
+            expression=expression or "",
             approved_for_commercial_training=False,
             elected_licenses=(),
             requires_attribution=False,
             rejection_reason="Empty or missing SPDX license identifier.",
         )
 
-    # Strip balanced outer parentheses iteratively
-    expr = cleaned.replace("(", " ").replace(")", " ")
-    or_branches = [b.strip() for b in re.split(r"\bOR\b", expr) if b.strip()]
-    if not or_branches:
-        return LicenseDecision(cleaned, False, (), False, "Malformed SPDX expression.")
+    try:
+        tokens = _tokenize_spdx(cleaned)
+    except ValueError as exc:
+        return LicenseDecision(
+            expression=cleaned,
+            approved_for_commercial_training=False,
+            elected_licenses=(),
+            requires_attribution=False,
+            rejection_reason=str(exc),
+        )
 
-    branch_failures: list[str] = []
-    for branch in or_branches:
-        and_terms = [t.strip() for t in re.split(r"\bAND\b", branch) if t.strip()]
-        if not and_terms:
-            branch_failures.append("Empty AND clause")
-            continue
+    parser = _SpdxExpressionParser(tokens)
+    ast = parser.parse()
+    if ast is None or parser.error is not None:
+        return LicenseDecision(
+            expression=cleaned,
+            approved_for_commercial_training=False,
+            elected_licenses=(),
+            requires_attribution=False,
+            rejection_reason=parser.error or "Malformed SPDX expression.",
+        )
 
-        branch_ok = True
-        elected: list[str] = []
-        needs_attr = False
-        for term in and_terms:
-            rule = APPROVED_COMMERCIAL_SPDX.get(term)
-            if rule is None or not rule.commercial_allowed:
-                branch_ok = False
-                branch_failures.append(f"Disallowed or unverified license term '{term}'")
-                break
-            elected.append(rule.spdx_id)
-            needs_attr = needs_attr or rule.requires_attribution
-
-        if branch_ok:
-            return LicenseDecision(
-                expression=cleaned,
-                approved_for_commercial_training=True,
-                elected_licenses=tuple(elected),
-                requires_attribution=needs_attr,
-                rejection_reason=None,
-            )
-
+    satisfiable, elected, requires_attr, rejection = _evaluate_spdx_ast(ast)
     return LicenseDecision(
         expression=cleaned,
-        approved_for_commercial_training=False,
-        elected_licenses=(),
-        requires_attribution=False,
-        rejection_reason="; ".join(branch_failures),
+        approved_for_commercial_training=satisfiable,
+        elected_licenses=tuple(elected),
+        requires_attribution=requires_attr,
+        rejection_reason=rejection,
     )
 
 

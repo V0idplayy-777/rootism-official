@@ -38,6 +38,25 @@ def test_spdx_commercial_policy_and_deep_file_license_scanner() -> None:
     for bad in ("GPL-3.0-only", "AGPL-3.0-or-later", "CC-BY-NC-4.0", "CC-BY-SA-4.0", "MIT AND GPL-3.0-only", "UNKNOWN", ""):
         assert evaluate_spdx_expression(bad).approved_for_commercial_training is False
 
+    # Regression: parenthesised expressions must respect AND/OR precedence
+    # (MIT OR Apache-2.0) AND GPL-3.0-only must be rejected — GPL is not approved
+    paren_reject = evaluate_spdx_expression("(MIT OR Apache-2.0) AND GPL-3.0-only")
+    assert paren_reject.approved_for_commercial_training is False
+
+    # Regression: malformed expressions must be rejected
+    for malformed in ("MIT OR", "OR MIT", "MIT AND", "AND MIT", "(MIT", "MIT)", "((MIT OR Apache-2.0)"):
+        assert evaluate_spdx_expression(malformed).approved_for_commercial_training is False
+
+    # Regression: deeply nested parentheses with correct precedence
+    nested = evaluate_spdx_expression("((MIT OR Apache-2.0) AND ISC) OR CC0-1.0")
+    assert nested.approved_for_commercial_training is True
+    assert "MIT" in nested.elected_licenses
+
+    # Regression: WITH operator (License WITH Exception)
+    with_op = evaluate_spdx_expression("MIT WITH BSL-1.0")
+    assert with_op.approved_for_commercial_training is True
+    assert with_op.elected_licenses == ("MIT",)
+
     scanner = DeepFileLicenseVerifier()
     clean = scanner.scan_file(
         file_path="src/math/linalg.py",

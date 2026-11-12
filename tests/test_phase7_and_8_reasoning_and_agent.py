@@ -120,6 +120,9 @@ def test_coding_agent_repair_loop_rollback_and_guardrails(tmp_path: Path) -> Non
     orchestrator = CodingAgentOrchestrator(tools, max_iterations=8)
 
     # Multi-step repair loop: inspect -> run_tests (fails assertion) -> edit_file -> run_tests (passes) -> summarise
+    # Pre-compute confirmation token for the edit_file overwrite (safety gate)
+    confirm_token = tools.safety.compute_confirmation_token("file_mutation", "edit:calc.py")
+
     def _repair_planner(
         _goal: str, history: list[AgentStepTrace], _reg: AgentToolRegistry
     ) -> AgentPlannedAction:
@@ -136,7 +139,7 @@ def test_coding_agent_repair_loop_rollback_and_guardrails(tmp_path: Path) -> Non
                 "repair",
                 "Fix subtraction bug in calc.py",
                 "edit_file",
-                {"path": "calc.py", "old_text": "return a - b", "new_text": "return a + b"},
+                {"path": "calc.py", "old_text": "return a - b", "new_text": "return a + b", "confirmation_token": confirm_token},
             )
         if step == 3:
             return AgentPlannedAction("test", "Verify fix with pytest", "run_tests", {})

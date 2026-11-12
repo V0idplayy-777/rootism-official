@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import re
+import secrets
 import threading
 import time
 import uuid
@@ -142,6 +143,8 @@ def create_rootism_app(
     api_key: str | None = None,
     max_concurrent_generations: int = 4,
     rate_limit_per_minute: int = 240,
+    allowed_origins: list[str] | None = None,
+    require_auth: bool | None = None,
 ) -> FastAPI:
     repo_root = Path(__file__).resolve().parents[2]
     ui_root = Path(platform_root_dir).resolve() if platform_root_dir else repo_root
@@ -167,6 +170,15 @@ def create_rootism_app(
     agent_tools = AgentToolRegistry(ws_dir)
 
     configured_api_key = api_key if api_key is not None else os.environ.get("ROOTISM_API_KEY")
+    # Require authentication by default. Only disable explicitly for local development.
+    auth_required = (
+        require_auth if require_auth is not None
+        else bool(configured_api_key)  # default: require auth when a key is configured
+    )
+    if auth_required and not configured_api_key:
+        # If auth is required but no key is configured, generate an ephemeral one
+        # so the server is never exposed without authentication.
+        configured_api_key = secrets.token_urlsafe(32)
     rate_limiter = SlidingWindowRateLimiter(max_requests_per_minute=rate_limit_per_minute)
     concurrency_sem = asyncio.Semaphore(max(1, int(max_concurrent_generations)))
     active_cancellations: dict[str, threading.Event] = {}
@@ -181,9 +193,14 @@ def create_rootism_app(
         description="Commercial-grade Rootism AI Coding, Reasoning & Multi-Step Agent Server",
     )
 
+    # Restrict CORS to explicit origin allowlist
+    resolved_origins = allowed_origins if allowed_origins is not None else ["*"]
+    if auth_required and resolved_origins == ["*"]:
+        # Never allow wildcard CORS when authentication is enabled
+        resolved_origins = []
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=resolved_origins,
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -195,9 +212,15 @@ def create_rootism_app(
         request.state.request_id = req_id
         response = await call_next(request)
         response.headers["X-Request-ID"] = req_id
-        # Explicitly allow iframe preview embedding on Arena's *.e2b.app proxy
-        if "X-Frame-Options" in response.headers:
-            del response.headers["X-Frame-Options"]
+        # Use CSP frame-ancestors for controlled iframe embedding instead of
+        # blanket-removing X-Frame-Options (clickjacking protection).
+        # Allow embedding on Arena's e2b.app proxy and same-origin.
+        existing_csp = response.headers.get("Content-Security-Policy", "")
+        frame_ancestors = "frame-ancestors 'self' https://*.e2b.app"
+        if frame_ancestors not in existing_csp:
+            response.headers["Content-Security-Policy"] = (
+                f"{existing_csp}; {frame_ancestors}" if existing_csp else frame_ancestors
+            )
         return response
 
     @app.exception_handler(HTTPException)
@@ -235,7 +258,12 @@ def create_rootism_app(
         request: Request,
         authorization: str | None = Header(default=None),
     ) -> None:
-        if configured_api_key:
+        if auth_required:
+            if not configured_api_key:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Authentication is required but no API key is configured.",
+                )
             expected = f"Bearer {configured_api_key}"
             if authorization != expected:
                 raise HTTPException(
@@ -247,7 +275,7 @@ def create_rootism_app(
 
     @app.api_route("/api/v1/health", methods=["GET", "HEAD"])
     async def health_check() -> dict[str, Any]:
-        meta = engine.runtime_metadata()
+        # Health endpoint returns minimal info only — no runtime metadata leak
         with cancel_lock:
             in_flight = len(active_cancellations)
         return {
@@ -256,8 +284,7 @@ def create_rootism_app(
             "uptime_seconds": round(time.time() - server_boot_ts, 2),
             "in_flight_generations": in_flight,
             "max_concurrent_generations": max_concurrent_generations,
-            "auth_required": bool(configured_api_key),
-            "runtime": meta,
+            "auth_required": auth_required,
         }
 
     @app.get("/api/v1/model/info", dependencies=[Depends(verify_auth_and_rate_limit)])
@@ -387,7 +414,9 @@ def create_rootism_app(
         prompt_ids, ctx_report = engine.fit_to_context_window(raw_ids, sampling.max_new_tokens)
 
         async def _sse_generator():
-            queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+            # Bounded queue with backpressure — a slow client cannot accumulate
+            # unbounded events in memory.
+            queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=256)
             loop = asyncio.get_running_loop()
 
             def _producer() -> None:
@@ -411,17 +440,25 @@ def create_rootism_app(
                             preview_sanitized = ReasoningOutputFormatter.sanitize_and_extract(
                                 "".join(raw_chunks), mode=req.reasoning_mode
                             )
-                            loop.call_soon_threadsafe(
-                                queue.put_nowait,
-                                {
-                                    "event": "delta",
-                                    "request_id": req_id,
-                                    "step": ch.step_index,
-                                    "delta": ch.delta_text,
-                                    "sanitized_text_so_far": preview_sanitized.visible_answer,
-                                    "reasoning_summary_so_far": preview_sanitized.reasoning_summary,
-                                },
-                            )
+                            # Only expose sanitized text — never raw internal deliberation
+                            event = {
+                                "event": "delta",
+                                "request_id": req_id,
+                                "step": ch.step_index,
+                                "text": preview_sanitized.visible_answer,
+                                "sanitized_text_so_far": preview_sanitized.visible_answer,
+                                "reasoning_summary_so_far": preview_sanitized.reasoning_summary,
+                            }
+                            # Use put_nowait with backpressure handling
+                            try:
+                                loop.call_soon_threadsafe(queue.put_nowait, event)
+                            except asyncio.QueueFull:
+                                # Drop oldest event to make room for new one
+                                try:
+                                    loop.call_soon_threadsafe(queue.get_nowait)
+                                    loop.call_soon_threadsafe(queue.put_nowait, event)
+                                except (asyncio.QueueEmpty, asyncio.QueueFull):
+                                    pass
                         if ch.is_final and ch.finish_reason:
                             finish_reason = ch.finish_reason
                 except Exception as exc:

@@ -74,15 +74,26 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+_WORKER_TOKENIZER: RootismTokenizer | None = None
+
+
+def _init_worker(tok_path: str) -> None:
+    global _WORKER_TOKENIZER
+    _WORKER_TOKENIZER = RootismTokenizer.load(tok_path)
+
+
 def _tokenize_worker_batch(
-    args: tuple[str, list[tuple[str, int, int]], bool],
-) -> list[tuple[list[int], int, int]]:
+    args: tuple[str, list[tuple[str, int, int, str]], bool],
+) -> list[tuple[list[int], int, int, str]]:
+    global _WORKER_TOKENIZER
     tok_path, docs, allow_special = args
-    tok = RootismTokenizer.load(tok_path)
-    results: list[tuple[list[int], int, int]] = []
-    for text, dom_id, lang_id in docs:
+    if _WORKER_TOKENIZER is None:
+        _WORKER_TOKENIZER = RootismTokenizer.load(tok_path)
+    tok = _WORKER_TOKENIZER
+    results: list[tuple[list[int], int, int, str]] = []
+    for text, dom_id, lang_id, dataset_id in docs:
         tids = tok.encode(text, add_bos=True, add_eos=True, allow_special=allow_special)
-        results.append((tids, dom_id, lang_id))
+        results.append((tids, dom_id, lang_id, dataset_id))
     return results
 
 
@@ -113,6 +124,8 @@ class RootismShardWriter:
         self.shards: list[ShardDescriptor] = []
         self.total_documents: int = 0
         self.total_tokens: int = 0
+        # Per-dataset attribution: dataset_id -> (doc_count, token_count)
+        self.dataset_attribution: dict[str, dict[str, int]] = {}
 
         self._cur_shard_idx: int = 0
         self._cur_tokens_written: int = 0
@@ -178,10 +191,27 @@ class RootismShardWriter:
         domain_id: int = 0,
         language_id: int = 0,
         flags: int = 0,
+        dataset_id: str = "",
     ) -> None:
-        arr = np.asarray(token_ids, dtype="<u2")
+        arr = np.asarray(token_ids, dtype=np.int64)
         if arr.size == 0:
             return
+        # Validate every token ID against the uint16 range before conversion
+        # to prevent silent wrapping of negative or oversized IDs.
+        if arr.size > 0:
+            min_val = int(arr.min())
+            max_val = int(arr.max())
+            if min_val < 0 or min_val > 65_535:
+                raise ValueError(
+                    f"Token ID {min_val} out of uint16 range [0, 65535] "
+                    f"(vocab_size={self.tokenizer.vocab_size})"
+                )
+            if max_val > 65_535:
+                raise ValueError(
+                    f"Token ID {max_val} out of uint16 range [0, 65535] "
+                    f"(vocab_size={self.tokenizer.vocab_size})"
+                )
+        arr = arr.astype("<u2")
         if self._cur_shard_fh is None:
             self._open_new_shard()
         elif self._cur_tokens_written > 0 and (
@@ -201,6 +231,12 @@ class RootismShardWriter:
         self._cur_tokens_written += length
         self.total_documents += 1
         self.total_tokens += length
+
+        # Track per-dataset attribution for provenance auditing
+        if dataset_id:
+            attr = self.dataset_attribution.setdefault(dataset_id, {"documents": 0, "tokens": 0})
+            attr["documents"] += 1
+            attr["tokens"] += length
 
     def add_document_text(
         self,
@@ -228,6 +264,10 @@ class RootismShardWriter:
             "total_documents": self.total_documents,
             "unique_source_tokens": int(src_toks),
             "deduplicated_tokens": int(self.total_tokens),
+            "dataset_attribution": {
+                ds_id: {"documents": att["documents"], "tokens": att["tokens"]}
+                for ds_id, att in self.dataset_attribution.items()
+            },
             "shards": [s.to_dict() for s in self.shards],
         }
         tmp = manifest_path.with_suffix(".json.tmp")
@@ -248,7 +288,12 @@ def build_shards_parallel(
     max_tokens_per_shard: int = 50_000_000,
     allow_special: bool = False,
 ) -> Path:
-    """Parallel multi-process corpus tokenization & sharding pipeline."""
+    """Parallel multi-process corpus tokenization & sharding pipeline.
+
+    Streams documents through bounded batches so the full raw corpus is never
+    held in memory simultaneously. Retains ``dataset_id`` provenance through
+    the pipeline for per-source attribution.
+    """
     tok = RootismTokenizer.load(tokenizer_path)
     writer = RootismShardWriter(
         output_dir=output_dir,
@@ -257,27 +302,34 @@ def build_shards_parallel(
         max_tokens_per_shard=max_tokens_per_shard,
     )
 
-    batches: list[tuple[str, list[tuple[str, int, int]], bool]] = []
-    cur: list[tuple[str, int, int]] = []
     tok_path_str = str(tokenizer_path)
 
-    for doc in documents:
-        cur.append((doc.text, doc.domain_id, doc.language_id))
-        if len(cur) >= batch_size:
-            batches.append((tok_path_str, cur, allow_special))
-            cur = []
-    if cur:
-        batches.append((tok_path_str, cur, allow_special))
+    def _batch_generator() -> Iterator[tuple[str, list[tuple[str, int, int, str]], bool]]:
+        """Yield bounded batches without accumulating the full corpus."""
+        cur: list[tuple[str, int, int, str]] = []
+        for doc in documents:
+            cur.append((doc.text, doc.domain_id, doc.language_id, doc.dataset_id))
+            if len(cur) >= batch_size:
+                yield (tok_path_str, cur, allow_special)
+                cur = []
+        if cur:
+            yield (tok_path_str, cur, allow_special)
 
-    if num_workers <= 1 or len(batches) <= 1:
-        for b in batches:
-            for tids, dom_id, lang_id in _tokenize_worker_batch(b):
-                writer.add_token_sequence(tids, domain_id=dom_id, language_id=lang_id)
+    if num_workers <= 1:
+        for batch in _batch_generator():
+            for tids, dom_id, lang_id, ds_id in _tokenize_worker_batch(batch):
+                writer.add_token_sequence(
+                    tids, domain_id=dom_id, language_id=lang_id, dataset_id=ds_id
+                )
     else:
-        with ProcessPoolExecutor(max_workers=num_workers) as pool:
-            for encoded_batch in pool.map(_tokenize_worker_batch, batches):
-                for tids, dom_id, lang_id in encoded_batch:
-                    writer.add_token_sequence(tids, domain_id=dom_id, language_id=lang_id)
+        with ProcessPoolExecutor(
+            max_workers=num_workers, initializer=_init_worker, initargs=(tok_path_str,)
+        ) as pool:
+            for encoded_batch in pool.map(_tokenize_worker_batch, _batch_generator()):
+                for tids, dom_id, lang_id, ds_id in encoded_batch:
+                    writer.add_token_sequence(
+                        tids, domain_id=dom_id, language_id=lang_id, dataset_id=ds_id
+                    )
 
     return writer.finalize()
 
@@ -294,6 +346,7 @@ class RootismStreamingShardDataset:
         *,
         expected_tokenizer_fingerprint: str | None = None,
         verify_checksums_on_open: bool = False,
+        required_provenance_registry_sha256: str | None = None,
     ) -> None:
         self.manifest_path = Path(manifest_path)
         self.base_dir = self.manifest_path.parent
@@ -316,15 +369,49 @@ class RootismStreamingShardDataset:
         if not self.manifest.get("provenance_registry_sha256"):
             raise ValueError("Shard manifest missing required commercial provenance_registry_sha256")
 
-        self.total_tokens: int = int(self.manifest["deduplicated_tokens"])
+        # Enforce provenance registry hash equality when a required hash is supplied
+        if required_provenance_registry_sha256 is not None:
+            manifest_reg = self.manifest.get("provenance_registry_sha256", "")
+            if manifest_reg != required_provenance_registry_sha256:
+                raise RuntimeError(
+                    f"Provenance registry mismatch: manifest has {manifest_reg!r}, "
+                    f"expected {required_provenance_registry_sha256!r}"
+                )
+
+        # Validate unique_source_tokens consistency
+        unique_src = int(self.manifest.get("unique_source_tokens", self.manifest["deduplicated_tokens"]))
+        dedup_toks = int(self.manifest["deduplicated_tokens"])
+        if unique_src < dedup_toks:
+            raise ValueError(
+                f"unique_source_tokens ({unique_src}) cannot be less than "
+                f"deduplicated_tokens ({dedup_toks})"
+            )
+
+        self.total_tokens: int = dedup_toks
         self.total_documents: int = int(self.manifest["total_documents"])
+        self.unique_source_tokens: int = unique_src
 
         self._shard_mmaps: list[np.memmap] = []
         self._shard_indices: list[list[tuple[int, int, int, int, int, int]]] = []
 
         for s_desc in self.manifest["shards"]:
-            s_path = self.base_dir / s_desc["shard_filename"]
-            i_path = self.base_dir / s_desc["index_filename"]
+            # Validate that shard paths stay within the dataset directory
+            s_path = (self.base_dir / s_desc["shard_filename"]).resolve()
+            i_path = (self.base_dir / s_desc["index_filename"]).resolve()
+            try:
+                s_path.relative_to(self.base_dir.resolve())
+            except ValueError:
+                raise ValueError(
+                    f"Shard filename {s_desc['shard_filename']!r} resolves outside "
+                    f"dataset directory {self.base_dir}"
+                )
+            try:
+                i_path.relative_to(self.base_dir.resolve())
+            except ValueError:
+                raise ValueError(
+                    f"Index filename {s_desc['index_filename']!r} resolves outside "
+                    f"dataset directory {self.base_dir}"
+                )
             if verify_checksums_on_open:
                 if _sha256_file(s_path) != s_desc["shard_sha256"]:
                     raise RuntimeError(f"Corrupted shard file {s_path}: SHA-256 mismatch")

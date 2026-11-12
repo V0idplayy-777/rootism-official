@@ -53,6 +53,9 @@ class DataMixtureSampler:
         """
         Yield documents sampled according to `stage_config` domain weights,
         tagging each sample with `is_repeated_epoch` (`epoch > 0`).
+
+        Domains that reach their `max_epochs` limit are removed from the
+        active sampling pool rather than terminating the entire mixture.
         """
         rng = np.random.default_rng(self.seed + self.rank * 7919)
         iterators: dict[str, Iterator[dict[str, Any]]] = {
@@ -62,19 +65,32 @@ class DataMixtureSampler:
             for dom in self.domain_ids
         }
 
-        while True:
-            dom_idx = int(rng.choice(len(self.domain_ids), p=self.weights))
-            dom = self.domain_ids[dom_idx]
+        active_domains: list[str] = list(self.domain_ids)
+        active_weights: np.ndarray = self.weights.copy()
+
+        while active_domains:
+            # Re-normalize weights when a domain is exhausted
+            if active_weights.sum() <= 0:
+                active_weights = np.ones(len(active_domains), dtype=np.float64)
+                active_weights /= active_weights.sum()
+
+            dom_idx = int(rng.choice(len(active_domains), p=active_weights))
+            dom = active_domains[dom_idx]
             try:
                 doc = next(iterators[dom])
             except StopIteration:
                 self.domain_epochs[dom] += 1
                 next_ep = self.domain_epochs[dom]
                 if float(next_ep) >= self.max_epochs[dom]:
-                    raise RuntimeError(
-                        f"Domain '{dom}' exceeded configured max_epochs ({self.max_epochs[dom]}) "
-                        "to prevent memorisation overfitting."
-                    ) from None
+                    # Domain exhausted — remove from active pool, continue with others
+                    active_domains.pop(dom_idx)
+                    active_weights = active_weights[np.arange(len(active_weights)) != dom_idx]
+                    active_weights = (
+                        active_weights / active_weights.sum()
+                        if active_weights.sum() > 0
+                        else active_weights
+                    )
+                    continue
                 iterators[dom] = self.domain_datasets[dom].iter_documents(
                     seed=self.seed,
                     epoch=next_ep,

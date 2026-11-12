@@ -204,6 +204,24 @@ class AgentToolRegistry:
         rel = str(target.relative_to(self.safety.workspace_root))
 
         existed = target.is_file()
+        token = params.get("confirmation_token")
+        if existed:
+            decision = self.safety.evaluate_file_mutation(
+                operation="create",
+                paths=[rel_arg],
+                provided_confirmation_token=token,
+                overwrite_existing=True,
+            )
+            if not decision.allowed_immediately:
+                return AgentToolResult(
+                    tool_name="create_file",
+                    ok=False,
+                    requires_confirmation=decision.requires_user_confirmation,
+                    confirmation_token=decision.confirmation_token,
+                    summary=decision.reason,
+                    payload={"safety_decision": decision.to_dict(), "path": rel},
+                )
+
         old_content = target.read_text(encoding="utf-8", errors="replace") if existed else None
         diff = self._compute_unified_diff(rel, old_content or "", new_content)
 
@@ -229,6 +247,24 @@ class AgentToolRegistry:
         if not target.is_file():
             raise FileNotFoundError(f"Cannot edit missing file: {rel_arg}")
         rel = str(target.relative_to(self.safety.workspace_root))
+
+        token = params.get("confirmation_token")
+        decision = self.safety.evaluate_file_mutation(
+            operation="edit",
+            paths=[rel_arg],
+            provided_confirmation_token=token,
+            overwrite_existing=True,
+        )
+        if not decision.allowed_immediately:
+            return AgentToolResult(
+                tool_name="edit_file",
+                ok=False,
+                requires_confirmation=decision.requires_user_confirmation,
+                confirmation_token=decision.confirmation_token,
+                summary=decision.reason,
+                payload={"safety_decision": decision.to_dict(), "path": rel},
+            )
+
         current = target.read_text(encoding="utf-8")
 
         occurrences = current.count(old_text)

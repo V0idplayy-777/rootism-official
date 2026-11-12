@@ -14,7 +14,9 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-from dataclasses import asdict, dataclass
+import secrets
+import time
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -66,16 +68,30 @@ _SENSITIVE_ENV_SUBSTRINGS: tuple[str, ...] = (
 )
 
 
+@dataclass
+class _ConfirmationTokenRecord:
+    """Server-side record for a pending confirmation token."""
+    token: str
+    action_type: str
+    target_summary: str
+    created_at: float
+    expires_at: float
+    consumed: bool = False
+
+
 class SafetyPolicyGuard:
     """
     Validates file paths, shell commands, and destructive workspace mutations.
     """
 
-    def __init__(self, workspace_root: str | Path) -> None:
+    def __init__(self, workspace_root: str | Path, *, token_ttl_sec: float = 300.0) -> None:
         self.workspace_root = Path(workspace_root).resolve()
         if not self.workspace_root.exists():
             self.workspace_root.mkdir(parents=True, exist_ok=True)
-        self._approved_tokens: set[str] = set()
+        # Server-side secret binds tokens to this process instance
+        self._server_secret = secrets.token_bytes(32)
+        self._token_ttl_sec = float(token_ttl_sec)
+        self._pending_tokens: dict[str, _ConfirmationTokenRecord] = {}
 
     def resolve_confined_path(self, relative_or_abs_path: str | Path) -> Path:
         """
@@ -99,13 +115,57 @@ class SafetyPolicyGuard:
             )
         return candidate
 
-    @staticmethod
-    def compute_confirmation_token(action_type: str, target_summary: str) -> str:
-        digest = hashlib.sha256(f"{action_type}::{target_summary}".encode("utf-8")).hexdigest()[:16]
-        return f"confirm-{digest}"
+    def compute_confirmation_token(self, action_type: str, target_summary: str) -> str:
+        """Generate a server-bound, single-use confirmation token with nonce and expiry.
+
+        The token is derived from: server_secret || action_type || target_summary || nonce || timestamp.
+        Without the server-side secret (which is per-process random), the token cannot be forged.
+        """
+        nonce = secrets.token_hex(8)
+        timestamp = str(int(time.time()))
+        raw = (
+            self._server_secret.hex()
+            + f"::{action_type}::{target_summary}::{nonce}::{timestamp}"
+        )
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+        token = f"confirm-{digest}"
+        expires_at = time.time() + self._token_ttl_sec
+        self._pending_tokens[token] = _ConfirmationTokenRecord(
+            token=token,
+            action_type=action_type,
+            target_summary=target_summary,
+            created_at=time.time(),
+            expires_at=expires_at,
+            consumed=False,
+        )
+        return token
 
     def grant_confirmation(self, token: str) -> None:
-        self._approved_tokens.add(token)
+        """Approve a pending confirmation token (must be valid and unexpired)."""
+        record = self._pending_tokens.get(token)
+        if record is None or record.consumed:
+            raise ValueError(f"Invalid or already-consumed confirmation token: {token}")
+        if time.time() > record.expires_at:
+            del self._pending_tokens[token]
+            raise ValueError(f"Confirmation token expired: {token}")
+        record.consumed = True
+
+    def _validate_and_consume_token(
+        self, token: str | None, action_type: str, target_summary: str
+    ) -> bool:
+        """Validate a confirmation token against its expected action/target and consume it."""
+        if token is None:
+            return False
+        record = self._pending_tokens.get(token)
+        if record is None or record.consumed:
+            return False
+        if record.action_type != action_type or record.target_summary != target_summary:
+            return False
+        if time.time() > record.expires_at:
+            del self._pending_tokens[token]
+            return False
+        record.consumed = True
+        return True
 
     def evaluate_command(
         self,
@@ -146,7 +206,7 @@ class SafetyPolicyGuard:
         for pat, msg in _CONFIRMATION_REQUIRED_PATTERNS:
             if pat.search(stripped):
                 tok = self.compute_confirmation_token("command", stripped)
-                if provided_confirmation_token == tok or tok in self._approved_tokens:
+                if self._validate_and_consume_token(provided_confirmation_token, "command", stripped):
                     return SafetyCheckDecision(
                         allowed_immediately=True,
                         blocked_unconditionally=False,
@@ -178,14 +238,23 @@ class SafetyPolicyGuard:
         operation: str,  # "delete" | "bulk_overwrite" | "edit" | "create"
         paths: list[str],
         provided_confirmation_token: str | None = None,
+        overwrite_existing: bool = False,
     ) -> SafetyCheckDecision:
         for p in paths:
             self.resolve_confined_path(p)
 
-        if operation == "delete" or (operation == "bulk_overwrite" and len(paths) > 3):
+        # Destructive operations that always require confirmation
+        is_destructive = operation == "delete" or (operation == "bulk_overwrite" and len(paths) > 3)
+        # Overwriting existing files requires confirmation regardless of operation
+        if overwrite_existing:
+            is_destructive = True
+
+        if is_destructive:
             summary = f"{operation}:{','.join(sorted(paths))}"
             tok = self.compute_confirmation_token("file_mutation", summary)
-            if provided_confirmation_token == tok or tok in self._approved_tokens:
+            if self._validate_and_consume_token(
+                provided_confirmation_token, "file_mutation", summary
+            ):
                 return SafetyCheckDecision(
                     allowed_immediately=True,
                     blocked_unconditionally=False,
@@ -194,12 +263,17 @@ class SafetyPolicyGuard:
                     reason=f"Destructive file operation ({operation}) confirmed by user.",
                     confirmation_token=tok,
                 )
+            reason = (
+                f"Operation '{operation}' affecting {len(paths)} file(s) requires user confirmation."
+                if operation == "delete" or operation == "bulk_overwrite"
+                else f"Overwriting existing file(s) via '{operation}' requires user confirmation."
+            )
             return SafetyCheckDecision(
                 allowed_immediately=False,
                 blocked_unconditionally=False,
                 requires_user_confirmation=True,
                 risk_level="destructive_confirm",
-                reason=f"Operation '{operation}' affecting {len(paths)} file(s) requires user confirmation.",
+                reason=reason,
                 confirmation_token=tok,
             )
 
