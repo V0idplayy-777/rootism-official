@@ -1,0 +1,171 @@
+model:
+  architecture_id: rootism-decoder-v1
+  model_name: Rootism-3B
+  verification_mode: false
+  vocab_size: 65536
+  d_model: 2560
+  n_layers: 40
+  n_heads: 20
+  n_kv_heads: 4
+  head_dim: 128
+  intermediate_size: 6656
+  rms_norm_eps: 1.0e-06
+  qk_norm: true
+  attention_bias: false
+  mlp_bias: false
+  tie_word_embeddings: false
+  attention_dropout: 0.0
+  max_position_embeddings: 32768
+  extended_context_length: 65536
+  rope_theta: 500000.0
+  rope_scaling:
+    scaling_type: none
+    factor: 1.0
+    original_max_position_embeddings: 32768
+    low_freq_factor: 1.0
+    high_freq_factor: 4.0
+    attention_factor: null
+  init_std: 0.02
+  residual_depth_scaling: true
+  pad_token_id: 0
+  bos_token_id: 1
+  eos_token_id: 2
+  unk_token_id: 3
+  initialization_origin: random_scratch
+  tokenizer_version_fingerprint: null
+
+tokenizer:
+  tokenizer_name: rootism-bpe-v1
+  semver: 1.0.0
+  vocab_size: 65536
+  reserved_special_slots: 64
+  digit_split_mode: single_digit
+  max_indentation_spaces: 16
+  min_pair_frequency: 2
+  pretokenizer_version: code-byte-v1
+
+data:
+  provenance_registry_path: configs/datasets/provenance_registry.yaml
+  require_verified_commercial_license: true
+  scan_file_headers_for_copyleft: true
+  enable_exact_dedup: true
+  enable_minhash_dedup: true
+  minhash_num_perm: 128
+  minhash_jaccard_threshold: 0.85
+  enable_benchmark_decontamination: true
+  decontamination_ngram_size: 13
+  shard_max_tokens: 100000000
+  curriculum_stages:
+    - stage_name: stage1_foundation_4k
+      token_budget: 520000000000
+      sequence_length: 4096
+      rope_scaling_factor: 1.0
+      domains:
+        - domain_id: source_code_curated
+          weight: 0.58
+          max_epochs: 3.0
+          description: Permissively licensed primary & secondary language source code
+        - domain_id: repository_and_debugging_workflows
+          weight: 0.08
+          max_epochs: 3.0
+          description: Multi-file repositories, diffs, and unit tests
+        - domain_id: algorithmic_and_mathematical_reasoning
+          weight: 0.12
+          max_epochs: 4.0
+          description: Formal deduction, math, algorithms & verified synthetic tasks
+        - domain_id: technical_docs_tutorials_and_api_refs
+          weight: 0.13
+          max_epochs: 3.0
+          description: Official framework & language documentation
+        - domain_id: general_natural_language_foundation
+          weight: 0.09
+          max_epochs: 2.0
+          description: Clean CC0 / CC-BY-4.0 natural language prose
+    - stage_name: stage2_long_context_32k
+      token_budget: 100000000000
+      sequence_length: 32768
+      rope_scaling_factor: 1.0
+      domains:
+        - domain_id: source_code_curated
+          weight: 0.42
+          max_epochs: 3.0
+          description: Long source modules and multi-language libraries
+        - domain_id: repository_and_debugging_workflows
+          weight: 0.28
+          max_epochs: 4.0
+          description: Full 32K repository trees, cross-file refactors & test suites
+        - domain_id: algorithmic_and_mathematical_reasoning
+          weight: 0.16
+          max_epochs: 4.0
+          description: Extended multi-step reasoning derivations
+        - domain_id: technical_docs_tutorials_and_api_refs
+          weight: 0.10
+          max_epochs: 3.0
+          description: Full architecture specifications and API manuals
+        - domain_id: general_natural_language_foundation
+          weight: 0.04
+          max_epochs: 2.0
+          description: Long-form technical articles
+    - stage_name: stage3_high_purity_annealing_32k_64k
+      token_budget: 30000000000
+      sequence_length: 32768
+      rope_scaling_factor: 2.0
+      domains:
+        - domain_id: source_code_curated
+          weight: 0.30
+          max_epochs: 2.0
+          description: Highest-quality syntax-verified idiomatic code
+        - domain_id: repository_and_debugging_workflows
+          weight: 0.32
+          max_epochs: 3.0
+          description: Verified bug-fix trajectories, tool-use & multi-file tasks
+        - domain_id: algorithmic_and_mathematical_reasoning
+          weight: 0.26
+          max_epochs: 4.0
+          description: Execution-verified algorithmic & constraint reasoning
+        - domain_id: technical_docs_tutorials_and_api_refs
+          weight: 0.09
+          max_epochs: 2.0
+          description: Reference framework & API documentation
+        - domain_id: general_natural_language_foundation
+          weight: 0.03
+          max_epochs: 2.0
+          description: Concise technical prose
+
+training:
+  run_name: rootism-3b-pretrain-650b
+  seed: 20261112
+  deterministic_ops: false
+  verification_mode: false
+  target_training_tokens: 650000000000
+  sequence_length: 4096
+  micro_batch_size: 4
+  warmup_tokens: 2000000000
+  checkpoint_dir: checkpoints/rootism-3b
+  checkpoint_interval_steps: 1000
+  eval_interval_steps: 1000
+  log_interval_steps: 10
+  optimizer:
+    optimizer_type: adamw
+    learning_rate: 0.0003
+    min_learning_rate: 3.0e-05
+    beta1: 0.9
+    beta2: 0.95
+    eps: 1.0e-08
+    weight_decay: 0.1
+    max_grad_norm: 1.0
+    prefer_fused: true
+    prefer_foreach: true
+  memory:
+    precision: auto
+    activation_checkpointing: selective
+    selective_checkpoint_every_n_layers: 2
+    gradient_accumulation_steps: 8
+    empty_cache_interval_steps: 0
+  distributed:
+    strategy: auto
+    backend: auto
+    tensor_parallel_size: 1
+    pipeline_parallel_size: 1
+    cpu_offload_params: false
+    sync_module_states: true

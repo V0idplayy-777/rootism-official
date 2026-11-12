@@ -1,0 +1,33 @@
+# Python virtual environments & bytecode
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage/
+
+# Local dataset shards, checkpoints & runtime artifacts
+# (Kept out of Git per repository storage conventions)
+artifacts/
+checkpoints/
+data_shards/
+logs/
+*.rshard
+*.ridx
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+
+# OS & editor files
+.DS_Store
+*.swp
+*~
